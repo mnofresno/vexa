@@ -2,6 +2,8 @@ import { createClient, RedisClientType } from 'redis';
 import { log } from '../utils';
 
 export interface TranscriptionSegment {
+  /** Stable segment identity — required for versioned envelopes */
+  id: string;
   speaker: string;
   text: string;
   /** Relative to session start (seconds) */
@@ -55,6 +57,42 @@ export interface SegmentPublisherConfig {
  * Segments: XADD with { payload: JSON } to stream, PUBLISH flat JSON to pub/sub.
  * Speaker events: XADD flat fields to speaker_events_relative stream.
  */
+
+/** Schema version for the published envelope — bumped when the wire format changes */
+const ENVELOPE_SCHEMA_VERSION = 1;
+
+/** Maximum retry attempts for transient Redis failures */
+const MAX_RETRY_ATTEMPTS = 3;
+
+/** Transient error patterns that should be retried */
+const TRANSIENT_ERRORS = [
+  'ECONNRESET',
+  'ECONNREFUSED',
+  'ETIMEDOUT',
+  'EAI_AGAIN',
+  'ENETUNREACH',
+  'Connection is closed',
+  'WRONGTYPE',
+  'IOError',
+];
+
+/** Counts for published, retried and permanently failed bundles */
+export interface PublicationCounters {
+  published: number;
+  retried: number;
+  failed: number;
+}
+
+/** Telemetry record for a permanent publication failure */
+export interface PublicationFailureTelemetry {
+  segmentId: string;
+  meetingId: string;
+  sessionUid: string;
+  reason: string;
+  attempts: number;
+  timestamp: string;
+}
+
 export class SegmentPublisher {
   private redisUrl: string;
   private meetingId: string;
@@ -70,6 +108,12 @@ export class SegmentPublisher {
    *  so that segment start_time aligns with the recording. */
   sessionStartMs: number;
 
+  // Publication counters (requirement: export counters for published, retried, failed)
+  private _counters: PublicationCounters = { published: 0, retried: 0, failed: 0 };
+
+  /** Bot lifecycle telemetry — records permanent failures with reasons */
+  private _failureTelemetry: PublicationFailureTelemetry[] = [];
+
   constructor(config: SegmentPublisherConfig) {
     this.redisUrl = config.redisUrl;
     this.meetingId = config.meetingId;
@@ -79,6 +123,76 @@ export class SegmentPublisher {
     this.segmentStreamKey = config.segmentStreamKey ?? 'transcription_segments';
     this.speakerEventStreamKey = config.speakerEventStreamKey ?? 'speaker_events_relative';
     this.sessionStartMs = Date.now();
+  }
+
+  /**
+   * Return a snapshot of publication counters (published, retried, failed).
+   * Requirement: export counters for published, retried and permanently failed bundles.
+   */
+  get counters(): Readonly<PublicationCounters> {
+    return { ...this._counters };
+  }
+
+  /**
+   * Return the recorded failure telemetry for bot lifecycle reporting.
+   */
+  get failureTelemetry(): ReadonlyArray<PublicationFailureTelemetry> {
+    return [...this._failureTelemetry];
+  }
+
+  /**
+   * Determine whether an error is transient and worth retrying.
+   */
+  private isTransientError(err: unknown): boolean {
+    const msg = (err as any)?.message ?? (err as any)?.code ?? String(err);
+    return TRANSIENT_ERRORS.some((pattern) => msg.includes(pattern));
+  }
+
+  /**
+   * Retry a Redis operation with bounded attempts for transient failures.
+   * On permanent failure, records the reason into bot lifecycle telemetry.
+   *
+   * @returns true if the operation succeeded (possibly after retries).
+   */
+  private async retryWithBackoff(
+    operation: () => Promise<void>,
+    segmentId: string,
+  ): Promise<boolean> {
+    let lastError: string = 'unknown';
+    let attempts = 1;
+
+    while (attempts <= MAX_RETRY_ATTEMPTS) {
+      try {
+        await operation();
+        return true;
+      } catch (err: any) {
+        lastError = err?.message ?? String(err);
+        if (!this.isTransientError(err)) {
+          break; // non-transient — no point retrying
+        }
+        if (attempts < MAX_RETRY_ATTEMPTS) {
+          this._counters.retried++;
+          const delay = 200 * Math.pow(2, attempts - 1); // 200, 400, 800 ms
+          log(`[SegmentPublisher] Transient Redis failure (attempt ${attempts}), retrying in ${delay}ms: ${lastError}`);
+          await new Promise((r) => setTimeout(r, delay));
+        }
+        attempts++;
+      }
+    }
+
+    // Permanent failure — record telemetry
+    this._counters.failed++;
+    const telemetry: PublicationFailureTelemetry = {
+      segmentId,
+      meetingId: this.meetingId,
+      sessionUid: this.sessionUid,
+      reason: lastError,
+      attempts,
+      timestamp: new Date().toISOString(),
+    };
+    this._failureTelemetry.push(telemetry);
+    log(`[SegmentPublisher] Permanent failure for segment ${segmentId} after ${attempts} attempt(s): ${lastError}`);
+    return false;
   }
 
   /**
@@ -172,49 +286,98 @@ export class SegmentPublisher {
 
   /**
    * Publish a transcription segment to Redis.
-   * - XADD to transcription_segments stream (collector format: { payload: JSON })
-   * - PUBLISH to meeting:{meetingId}:segments channel (flat JSON for gateway/dashboard)
    *
-   * Errors are logged but do not throw (bot should not crash on Redis failure).
+   * PR3 requirements:
+   * - Versioned envelope with schema_version, type, meeting_id, session_uid, segments[].
+   * - Requires meeting_id, session_uid and segment id; never publishes anonymous bundles.
+   * - Awaits Redis acknowledgement before marking a segment published.
+   * - Retries transient Redis failures; records final failure reason in telemetry.
+   * - Updates published / retried / failed counters.
+   *
+   * @returns true when the XADD acknowledgement was received (possibly after retries).
    */
-  async publishSegment(segment: TranscriptionSegment): Promise<void> {
-    try {
+  async publishSegment(segment: TranscriptionSegment): Promise<boolean> {
+    // Require meeting_id and session_uid — never publish an anonymous bundle
+    if (!this.meetingId || !this.sessionUid) {
+      const reason = `Missing required field: meeting_id=${!!this.meetingId}, session_uid=${!!this.sessionUid}`;
+      log(`[SegmentPublisher] Refusing to publish segment: ${reason}`);
+      this._counters.failed++;
+      this._failureTelemetry.push({
+        segmentId: segment.id ?? 'unknown',
+        meetingId: this.meetingId,
+        sessionUid: this.sessionUid,
+        reason,
+        attempts: 0,
+        timestamp: new Date().toISOString(),
+      });
+      return false;
+    }
+
+    // Require segment id — never publish an anonymous segment
+    if (!segment.id) {
+      const reason = 'Segment missing required id field';
+      log(`[SegmentPublisher] Refusing to publish anonymous segment: ${reason}`);
+      this._counters.failed++;
+      this._failureTelemetry.push({
+        segmentId: 'unknown',
+        meetingId: this.meetingId,
+        sessionUid: this.sessionUid,
+        reason,
+        attempts: 0,
+        timestamp: new Date().toISOString(),
+      });
+      return false;
+    }
+
+    // Build the versioned envelope
+    const envelope = {
+      schema_version: ENVELOPE_SCHEMA_VERSION,
+      type: 'transcription',
+      meeting_id: Number(this.meetingId),
+      session_uid: this.sessionUid,
+      segments: [{
+        id: segment.id,
+        start: segment.start,
+        end: segment.end,
+        text: segment.text,
+        speaker: segment.speaker,
+        language: segment.language,
+        completed: segment.completed ?? true,
+        ...(segment.absolute_start_time && { absolute_start_time: segment.absolute_start_time }),
+        ...(segment.absolute_end_time && { absolute_end_time: segment.absolute_end_time }),
+      }],
+    };
+
+    const segmentId = segment.id;
+
+    // Retry transient failures; await acknowledgement before returning success
+    const succeeded = await this.retryWithBackoff(async () => {
       const client = await this.ensureConnected();
 
-      // XADD: collector format — single 'payload' field with JSON
-      const payload = JSON.stringify({
-        type: 'transcription',
-        token: this.token,
-        uid: this.sessionUid,
-        platform: this.platform,
-        meeting_id: this.meetingId,
-        segments: [{
-          start: segment.start,
-          end: segment.end,
-          text: segment.text,
-          language: segment.language,
-          completed: segment.completed ?? true,
-          speaker: segment.speaker,
-          segment_id: segment.segment_id,
-          ...(segment.absolute_start_time && { absolute_start_time: segment.absolute_start_time }),
-          ...(segment.absolute_end_time && { absolute_end_time: segment.absolute_end_time }),
-        }],
+      // XADD — acknowledgement is the return value (stream entry ID)
+      const ack = await client.xAdd(this.segmentStreamKey, '*', {
+        payload: JSON.stringify(envelope),
       });
-
-      await client.xAdd(this.segmentStreamKey, '*', { payload });
+      // If xAdd returns, Redis has acknowledged the write
+      void ack;
 
       // PUBLISH: flat JSON for real-time delivery via gateway → WebSocket → dashboard
       const channel = `meeting:${this.meetingId}:segments`;
       await client.publish(channel, JSON.stringify({
         ...segment,
-        meeting_id: this.meetingId,
+        meeting_id: Number(this.meetingId),
         timestamp: Date.now(),
         ...(segment.absolute_start_time && { absolute_start_time: segment.absolute_start_time }),
         ...(segment.absolute_end_time && { absolute_end_time: segment.absolute_end_time }),
       }));
-    } catch (err: any) {
-      log(`[SegmentPublisher] Failed to publish segment: ${err.message}`);
+    }, segmentId);
+
+    if (succeeded) {
+      this._counters.published++;
+      log(`[SegmentPublisher] Published segment ${segmentId} (envelope v${ENVELOPE_SCHEMA_VERSION})`);
     }
+
+    return succeeded;
   }
 
   /**
@@ -227,23 +390,25 @@ export class SegmentPublisher {
       const client = await this.ensureConnected();
 
       const mapSeg = (s: TranscriptionSegment) => ({
+        id: s.id,
         start: s.start, end: s.end, text: s.text, language: s.language,
-        completed: s.completed ?? true, speaker: s.speaker, segment_id: s.segment_id,
+        completed: s.completed ?? true, speaker: s.speaker,
         ...(s.absolute_start_time && { absolute_start_time: s.absolute_start_time }),
         ...(s.absolute_end_time && { absolute_end_time: s.absolute_end_time }),
       });
 
-      // XADD confirmed segments for persistence (collector picks these up)
+      // XADD confirmed segments for persistence — versioned envelope per segment
       for (const seg of confirmed) {
-        const payload = JSON.stringify({
+        const envelope = {
+          schema_version: ENVELOPE_SCHEMA_VERSION,
           type: 'transcription',
-          token: this.token,
-          uid: this.sessionUid,
-          platform: this.platform,
-          meeting_id: this.meetingId,
+          meeting_id: Number(this.meetingId),
+          session_uid: this.sessionUid,
           segments: [mapSeg(seg)],
+        };
+        await client.xAdd(this.segmentStreamKey, '*', {
+          payload: JSON.stringify(envelope),
         });
-        await client.xAdd(this.segmentStreamKey, '*', { payload });
       }
 
       // Store pending snapshot in Redis (full replace per speaker, short TTL)

@@ -73,6 +73,7 @@ class Transcription(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     session_uid = Column(String, nullable=True, index=True)
     segment_id = Column(String, nullable=True)
+    status = Column(String(10), nullable=False, server_default=text("'draft'"), default='draft')
 
     meeting = relationship("Meeting", back_populates="transcriptions")
 
@@ -80,6 +81,9 @@ class Transcription(Base):
         Index('ix_transcription_meeting_start', 'meeting_id', 'start_time'),
         Index('ix_transcription_meeting_segment', 'meeting_id', 'segment_id',
               unique=True, postgresql_where=segment_id.isnot(None)),
+        UniqueConstraint('meeting_id', 'session_uid', 'segment_id',
+                         name='uq_transcription_meeting_session_segment',
+                         postgresql_where=text("(segment_id IS NOT NULL)")),
     )
 
 
