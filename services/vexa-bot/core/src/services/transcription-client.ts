@@ -47,6 +47,8 @@ export interface TranscriptionClientConfig {
   minSilenceDurationMs?: number;
   /** Voxtral model ID. Default: 'mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit' */
   modelId?: string;
+  /** Stable Vexa meeting session UID, forwarded for deterministic segment IDs. */
+  sessionUid?: string;
 }
 
 /**
@@ -85,6 +87,7 @@ export class TranscriptionClient {
   private maxSpeechDurationSec: number | undefined;
   private minSilenceDurationMs: number | undefined;
   private modelId: string;
+  private sessionUid: string | undefined;
   constructor(config: TranscriptionClientConfig) {
     // Ensure serviceUrl ends with the transcriptions endpoint
     this.serviceUrl = config.serviceUrl.replace(/\/+$/, '');
@@ -98,6 +101,7 @@ export class TranscriptionClient {
     this.maxSpeechDurationSec = config.maxSpeechDurationSec;
     this.minSilenceDurationMs = config.minSilenceDurationMs;
     this.modelId = config.modelId ?? 'mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit';
+    this.sessionUid = config.sessionUid;
   }
 
   /**
@@ -179,6 +183,14 @@ export class TranscriptionClient {
         `--${boundary}\r\n` +
         `Content-Disposition: form-data; name="language"\r\n\r\n` +
         `${language}\r\n`
+      ));
+    }
+
+    if (this.sessionUid) {
+      parts.push(Buffer.from(
+        `--${boundary}\r\n` +
+        `Content-Disposition: form-data; name="session_uid"\r\n\r\n` +
+        `${this.sessionUid}\r\n`
       ));
     }
 

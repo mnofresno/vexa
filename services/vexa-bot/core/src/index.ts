@@ -1263,11 +1263,13 @@ async function initPerSpeakerPipeline(botConfig: BotConfig): Promise<boolean> {
   const meetingId = botConfig.meeting_id;
 
   try {
+    const sessionUid = botConfig.connectionId || `bot-${Date.now()}`;
     transcriptionClient = new TranscriptionClient({
       serviceUrl: transcriptionServiceUrl,
       apiToken: botConfig.transcriptionServiceToken || process.env.TRANSCRIPTION_SERVICE_TOKEN,
       maxSpeechDurationSec: process.env.MAX_SPEECH_DURATION_SEC ? parseFloat(process.env.MAX_SPEECH_DURATION_SEC) : undefined,
       minSilenceDurationMs: process.env.MIN_SILENCE_DURATION_MS ? parseInt(process.env.MIN_SILENCE_DURATION_MS) : 100,
+      sessionUid,
     });
     log('[PerSpeaker] TranscriptionClient created');
 
@@ -1275,7 +1277,7 @@ async function initPerSpeakerPipeline(botConfig: BotConfig): Promise<boolean> {
       redisUrl: botConfig.redisUrl || process.env.REDIS_URL || 'redis://localhost:6379',
       meetingId: String(meetingId),
       token: botConfig.token,
-      sessionUid: botConfig.connectionId || `bot-${Date.now()}`,
+      sessionUid,
       platform: botConfig.platform,
     });
     log('[PerSpeaker] SegmentPublisher created');
@@ -1426,7 +1428,7 @@ async function initPerSpeakerPipeline(botConfig: BotConfig): Promise<boolean> {
           const lastSeg = result.segments?.[result.segments.length - 1];
           const segEndSec = lastSeg?.end;
           const whisperSegs = result.segments?.map(s => ({
-            text: s.text, start: s.start, end: s.end
+            id: s.id, text: s.text, start: s.start, end: s.end
           }));
           speakerManager!.handleTranscriptionResult(speakerId, result.text, segEndSec, whisperSegs);
 
@@ -1439,9 +1441,15 @@ async function initPerSpeakerPipeline(botConfig: BotConfig): Promise<boolean> {
             const endSec = (nowMs - segmentPublisher.sessionStartMs) / 1000;
 
             // Pending: one entry per Whisper segment (preserves sentence boundaries)
-            const whisperSegments = result.segments || [{ text: result.text, start: 0, end: 0 }];
+            const whisperSegments = result.segments || [{
+              id: `${speakerId}:${Math.round(bufStart)}:pending`,
+              text: result.text,
+              start: 0,
+              end: Math.max(0, endSec - startSec),
+            }];
             const pendingSegs: import('./services/segment-publisher').TranscriptionSegment[] = whisperSegments
               .map(ws => ({
+                id: ws.id,
                 speaker: speakerName,
                 text: (ws.text || '').trim(),
                 start: startSec + (ws.start || 0),
