@@ -436,7 +436,7 @@ async function main() {
 
           // Build pending segment (current unconfirmed text)
           const pendingSeg: import('./segment-publisher').TranscriptionSegment = {
-            speaker: speakerName, text, start: startSec, end: endSec,
+            id: segId, speaker: speakerName, text, start: startSec, end: endSec,
             language: result.language || 'en', completed: false,
             absolute_start_time: absStart, absolute_end_time: absEnd,
           };
@@ -448,6 +448,7 @@ async function main() {
           // Build per-segment pending from Whisper segments
           const whisperPendingSegs: import('./segment-publisher').TranscriptionSegment[] =
             (result.segments || [{ text, start: 0, end: 0 }]).map((ws: any) => ({
+              id: `${segId}-${ws.start || 0}`,
               speaker: speakerName,
               text: (ws.text || '').trim(),
               start: startSec + (ws.start || 0),
@@ -521,7 +522,7 @@ async function main() {
     const fullSegmentId = publisher ? `${publisher.sessionUid}:${segmentId}` : segmentId;
     if (!confirmedBatches.has(speakerId)) confirmedBatches.set(speakerId, []);
     confirmedBatches.get(speakerId)!.push({
-      speaker: speakerName, text: transcript, start: startSec, end: endSec,
+      id: fullSegmentId, speaker: speakerName, text: transcript, start: startSec, end: endSec,
       language: 'en', completed: true, segment_id: fullSegmentId,
       absolute_start_time: absStart, absolute_end_time: absEnd,
     });

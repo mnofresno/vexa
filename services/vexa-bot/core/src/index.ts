@@ -1514,7 +1514,7 @@ async function initPerSpeakerPipeline(botConfig: BotConfig): Promise<boolean> {
 
       if (!confirmedBatches.has(speakerId)) confirmedBatches.set(speakerId, []);
       confirmedBatches.get(speakerId)!.push({
-        speaker: speakerName, text: transcript, start: startSec, end: endSec,
+        id: fullSegmentId, speaker: speakerName, text: transcript, start: startSec, end: endSec,
         language: lang, completed: true, segment_id: fullSegmentId,
         absolute_start_time: new Date(bufferStartMs).toISOString(),
         absolute_end_time: new Date(bufferEndMs).toISOString(),
