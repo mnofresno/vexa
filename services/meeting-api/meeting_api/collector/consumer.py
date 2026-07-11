@@ -14,9 +14,16 @@ from .config import (
     REDIS_SPEAKER_EVENTS_STREAM_NAME,
     REDIS_SPEAKER_EVENTS_CONSUMER_GROUP
 )
-from .processors import process_stream_message, process_speaker_event_message
+from .processors import AckDecision, process_stream_message, process_speaker_event_message
 
 logger = logging.getLogger(__name__)
+
+
+def _should_ack(decision) -> bool:
+    """ACK only terminal outcomes; leave RETRY messages pending."""
+    if isinstance(decision, AckDecision):
+        return decision in (AckDecision.ACK, AckDecision.DEAD_LETTER)
+    return bool(decision)
 
 async def claim_stale_messages(redis_c: aioredis.Redis):
     """Claims and processes stale messages from the Redis Stream for the current consumer."""
@@ -82,8 +89,8 @@ async def claim_stale_messages(redis_c: aioredis.Redis):
                     logger.info(f"Processing claimed stale message {message_id_str}...")
                     processed_claim_count += 1
                     try:
-                        success = await process_stream_message(message_id_str, message_data_decoded, redis_c)
-                        if success:
+                        decision = await process_stream_message(message_id_str, message_data_decoded, redis_c)
+                        if _should_ack(decision):
                             logger.info(f"Successfully processed claimed stale message {message_id_str}. Acknowledging.")
                             await redis_c.xack(REDIS_STREAM_NAME, REDIS_CONSUMER_GROUP, message_id_str)
                             acked_claim_count += 1
@@ -153,7 +160,7 @@ async def consume_redis_stream(redis_c: aioredis.Redis):
                     should_ack = False
                     processed_count += 1
                     try:
-                        should_ack = await process_stream_message(message_id_str, message_data_decoded, redis_c)
+                        should_ack = _should_ack(await process_stream_message(message_id_str, message_data_decoded, redis_c))
                     except Exception as e:
                         logger.error(f"Critical error during process_stream_message call for {message_id_str}: {e}", exc_info=True)
                         should_ack = False
@@ -223,7 +230,7 @@ async def consume_speaker_events_stream(redis_c: aioredis.Redis):
                     should_ack = False
                     processed_count += 1
                     try:
-                        should_ack = await process_speaker_event_message(message_id_str, message_data_decoded, redis_c)
+                        should_ack = _should_ack(await process_speaker_event_message(message_id_str, message_data_decoded, redis_c))
                     except Exception as e:
                         logger.error(f"[SpeakerConsumer] Critical error during process_speaker_event_message call for {message_id_str}: {e}", exc_info=True)
                         should_ack = False

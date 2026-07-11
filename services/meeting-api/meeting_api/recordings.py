@@ -516,7 +516,7 @@ async def internal_upload_recording(
     # callback arrives with the same key, return the prior result without re-writing.
     # PR4: Verify object exists in MinIO before marking completed.
     # PR4: Persist checksum and capture_start_time in extra_metadata.
-    
+
     # Idempotency check: look for existing MediaFile with same checksum
     if checksum and is_final:
         existing_by_checksum = select(MediaFile).where(
@@ -538,7 +538,7 @@ async def internal_upload_recording(
                 "chunk_seq": chunk_seq,
                 "idempotent": True,
             }
-    
+
     was_completed = recording.status == "completed"
     media_file = None
     if is_final:
@@ -558,7 +558,7 @@ async def internal_upload_recording(
                 status_code=500,
                 detail=f"Storage object not found at {storage_path}"
             )
-        
+
         # Retire any existing MediaFile for this recording + media_type.
         from sqlalchemy import delete
         await db.execute(

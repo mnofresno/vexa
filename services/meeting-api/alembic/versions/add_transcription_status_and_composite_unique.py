@@ -13,7 +13,6 @@ PR3 — Guarantee Redis publication and Postgres persistence:
 
 from alembic import op
 import sqlalchemy as sa
-from sqlalchemy.dialects import postgresql
 
 revision = "pr3_transcription_status_composite_uq"
 down_revision = None
@@ -46,22 +45,43 @@ def upgrade() -> None:
         """
     )
 
-    # 3. Create the composite unique constraint (partial — only when
-    #    segment_id IS NOT NULL, so legacy rows without session_uid are safe).
-    op.create_unique_constraint(
+    # 3. Replace the old meeting+segment unique index with the session-aware
+    #    identity. PostgreSQL treats NULLs as distinct, so session_uid must be
+    #    present on new segment messages for this to enforce idempotency.
+    op.execute("DROP INDEX IF EXISTS ix_transcription_meeting_segment")
+    op.create_index(
+        "ix_transcription_meeting_segment",
+        "transcriptions",
+        ["meeting_id", "segment_id"],
+        unique=False,
+    )
+    op.create_index(
         "uq_transcription_meeting_session_segment",
         "transcriptions",
         ["meeting_id", "session_uid", "segment_id"],
-        postgresql_where=postgresql.text("segment_id IS NOT NULL"),
+        unique=True,
+        postgresql_where=sa.text("segment_id IS NOT NULL"),
+    )
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS ix_transcription_meeting_start "
+        "ON transcriptions (meeting_id, start_time)"
+    )
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS ix_transcriptions_text_tsvector "
+        "ON transcriptions USING gin (to_tsvector('spanish', text))"
     )
 
 
 def downgrade() -> None:
-    # Reverse the unique constraint
-    op.drop_constraint(
-        "uq_transcription_meeting_session_segment",
+    op.drop_index("uq_transcription_meeting_session_segment", table_name="transcriptions")
+    op.execute("DROP INDEX IF EXISTS ix_transcriptions_text_tsvector")
+    op.drop_index("ix_transcription_meeting_segment", table_name="transcriptions")
+    op.create_index(
+        "ix_transcription_meeting_segment",
         "transcriptions",
-        type_="unique",
+        ["meeting_id", "segment_id"],
+        unique=True,
+        postgresql_where=sa.text("segment_id IS NOT NULL"),
     )
 
     # Reverse the status column

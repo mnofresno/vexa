@@ -114,8 +114,8 @@ export class TranscriptionClient {
         return result;
       } catch (err: any) {
         // Voxtral returns 503 with Retry-After header; handle it explicitly
-        if (err.statusCode === 503) {
-          const retryAfter = 2000; // default 2s fallback
+        if (err.statusCode === 503 && attempt < this.maxRetries) {
+          const retryAfter = err.retryAfterMs ?? 2000;
           log(`[TranscriptionClient] Service busy (503), retrying in ${retryAfter}ms...`);
           await new Promise(resolve => setTimeout(resolve, retryAfter));
           continue;
@@ -243,6 +243,13 @@ export class TranscriptionClient {
         const errorText = await response.text().catch(() => 'Unable to read error response');
         const err: any = new Error(`Transcription service returned HTTP ${response.status}: ${errorText}`);
         err.statusCode = response.status;
+        const retryAfter = response.headers.get('Retry-After');
+        if (retryAfter) {
+          const parsed = Number(retryAfter);
+          if (Number.isFinite(parsed) && parsed > 0) {
+            err.retryAfterMs = parsed * 1000;
+          }
+        }
         throw err;
       }
 

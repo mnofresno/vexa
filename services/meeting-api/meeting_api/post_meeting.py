@@ -9,10 +9,10 @@ import logging
 import os
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .models import Meeting
+from .models import Meeting, Transcription
 from .database import async_session_local
 from .webhook_delivery import deliver, build_envelope
 
@@ -84,6 +84,16 @@ def _record_failure(meeting: Meeting, error: Exception) -> None:
     data[_ERROR_MSG_KEY] = str(error)[:500]
     meeting.data = data
     flag_modified(meeting, "data")
+
+
+async def _final_segment_count(db: AsyncSession, meeting_id: int) -> int:
+    result = await db.execute(
+        select(func.count(Transcription.id)).where(
+            Transcription.meeting_id == meeting_id,
+            Transcription.status == "final",
+        )
+    )
+    return int(result.scalar() or 0)
 
 
 # v0.10.5 Pack H — aggregation_failure_class taxonomy.
@@ -403,7 +413,7 @@ async def run_all_tasks(meeting_id: int):
                     await db.commit()
                 ok = await aggregate_transcription(meeting, db)
                 if not ok:
-                    failure = (meeting.data or {}).get(_ERROR_KEY)
+                    failure = (meeting.data or {}).get("aggregation_failure_class")
                     if failure == AggregationFailureClass.TRANSIENT_INFRA:
                         if attempt >= _MAX_RETRIES:
                             set_aggregation_failure_class(
@@ -422,6 +432,16 @@ async def run_all_tasks(meeting_id: int):
                         _record_failure(meeting, Exception("permanent infra"))
                         await db.commit()
                         return
+                final_segments = await _final_segment_count(db, meeting_id)
+                if final_segments == 0:
+                    _record_failure(meeting, RuntimeError("no final transcript segments"))
+                    await db.commit()
+                    logger.warning(
+                        "Stage TRANSCRIPT_READY waiting for final transcript segments for meeting %s",
+                        meeting_id,
+                    )
+                    return
+
                 _set_pm_state(meeting, PostMeetingState.TRANSCRIPT_READY.value)
                 await db.commit()
             except Exception as e:
@@ -465,9 +485,12 @@ async def run_all_tasks(meeting_id: int):
                     _set_pm_state(meeting, PostMeetingState.NOTES_READY.value)
                     await db.commit()
                 else:
+                    from .intelligence_config import AI_NOTES_ENABLED
+                    if AI_NOTES_ENABLED:
+                        raise RuntimeError("AI notes generation failed")
                     _set_pm_state(meeting, PostMeetingState.NOTES_READY.value)
                     await db.commit()
-                    logger.info(f"AI notes skipped for meeting {meeting_id}")
+                    logger.info(f"AI notes disabled for meeting {meeting_id}")
             except Exception as e:
                 _record_failure(meeting, e)
                 await db.commit()

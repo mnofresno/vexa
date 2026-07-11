@@ -226,11 +226,11 @@ async def process_stream_message(message_id: str, message_data: Dict[str, Any], 
             schema_version = int(schema_version)
         except (ValueError, TypeError):
             logger.warning(f"Message {message_id} has invalid schema_version '{schema_version}'. Dead-lettering.")
-            await _send_to_dead_letter(message_data, f"invalid schema_version: {schema_version}", redis_c)
+            await _send_to_dead_letter(message_id, message_data, f"invalid schema_version: {schema_version}", redis_c)
             return AckDecision.DEAD_LETTER
         if schema_version not in SUPPORTED_SCHEMA_VERSIONS:
             logger.warning(f"Message {message_id} schema_version={schema_version} not supported. Dead-lettering.")
-            await _send_to_dead_letter(message_data, f"unsupported schema_version: {schema_version}", redis_c)
+            await _send_to_dead_letter(message_id, message_data, f"unsupported schema_version: {schema_version}", redis_c)
             return AckDecision.DEAD_LETTER
 
         message_type = stream_data.get("type", "transcription")
@@ -268,11 +268,11 @@ async def process_stream_message(message_id: str, message_data: Dict[str, Any], 
                 meeting = await db.get(Meeting, internal_meeting_id)
                 if not meeting:
                     logger.warning(f"Message {message_id} references unknown meeting_id {internal_meeting_id}. Dead-lettering.")
-                    await _send_to_dead_letter(message_data, f"unknown meeting_id: {internal_meeting_id}", redis_c)
+                    await _send_to_dead_letter(message_id, message_data, f"unknown meeting_id: {internal_meeting_id}", redis_c)
                     return AckDecision.DEAD_LETTER
 
                 # ── PR3-2: Validate session ownership (when uid is provided) ──
-                session_uid = stream_data.get('uid')
+                session_uid = stream_data.get('session_uid') or stream_data.get('uid')
                 if session_uid and message_type in ("transcription", "transcript"):
                     stmt_session = select(MeetingSession).where(
                         MeetingSession.meeting_id == internal_meeting_id,
@@ -285,6 +285,7 @@ async def process_stream_message(message_id: str, message_data: Dict[str, Any], 
                             f"does not belong to meeting {internal_meeting_id}. Dead-lettering."
                         )
                         await _send_to_dead_letter(
+                            message_id,
                             message_data,
                             f"session_uid '{session_uid}' not owned by meeting {internal_meeting_id}",
                             redis_c,
@@ -334,10 +335,10 @@ async def process_stream_message(message_id: str, message_data: Dict[str, Any], 
             segment_count = 0
             hash_key = f"meeting:{internal_meeting_id}:segments"
             segments_to_store = {}
-            session_uid_from_payload = stream_data.get('uid')
+            session_uid_from_payload = stream_data.get('session_uid') or stream_data.get('uid')
 
             if not session_uid_from_payload:
-                logger.warning(f"[Msg {message_id}/Meet {internal_meeting_id}] Message missing 'uid' for transcription segments. Cannot map speakers. Segments in this message will not have speaker info.")
+                logger.warning(f"[Msg {message_id}/Meet {internal_meeting_id}] Message missing session_uid/uid for transcription segments. Cannot map speakers. Segments in this message will not have speaker info.")
 
             for i, segment in enumerate(stream_data.get('segments', [])):
                  if not isinstance(segment, dict) or segment.get('start') is None or segment.get('end') is None:
@@ -357,7 +358,7 @@ async def process_stream_message(message_id: str, message_data: Dict[str, Any], 
                      )
                      text_content = segment.get('text') or ""
                      language_content = segment.get('language')
-                     completed_content = bool(segment.get('completed', False))
+                     completed_content = bool(segment.get('completed', True))
                  except (ValueError, TypeError) as time_err:
                      logger.warning(f"[Msg {message_id}/Meet {internal_meeting_id}] Skipping segment {i} ({segment_id}) invalid time format: {time_err}")
                      continue
@@ -417,7 +418,7 @@ async def process_stream_message(message_id: str, message_data: Dict[str, Any], 
 
     except json.JSONDecodeError as e:
         logger.error(f"Failed to parse JSON payload for message {message_id}: {e}. Payload: {payload_json[:200]}... Dead-lettering.")
-        await _send_to_dead_letter(message_data, f"JSON parse error: {e}", redis_c)
+        await _send_to_dead_letter(message_id, message_data, f"JSON parse error: {e}", redis_c)
         return AckDecision.DEAD_LETTER
     except Exception as e:
         logger.error(f"Unexpected error in process_stream_message for {message_id}: {e}", exc_info=True)
@@ -432,7 +433,7 @@ async def process_transcript_bundle(message_id: str, stream_data: Dict[str, Any]
         speaker = stream_data.get('speaker', '')
         confirmed_segs = stream_data.get('confirmed', [])
         pending_segs = stream_data.get('pending', [])
-        session_uid = stream_data.get('uid')
+        session_uid = stream_data.get('session_uid') or stream_data.get('uid')
         hash_key = f"meeting:{meeting_id}:segments"
         now_iso = datetime.now(timezone.utc).isoformat()
 

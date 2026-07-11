@@ -80,7 +80,8 @@ async def search_meetings(
         FROM meetings m
         LEFT JOIN transcriptions t ON t.meeting_id = m.id
         WHERE m.user_id = :user_id
-          AND t.text @@ plainto_tsquery('spanish', :query)
+          AND t.status = 'final'
+          AND to_tsvector('spanish', t.text) @@ plainto_tsquery('spanish', :query)
         GROUP BY m.id
         ORDER BY m.created_at DESC
         LIMIT :limit
@@ -104,7 +105,8 @@ async def search_meetings(
                        t.start_time, t.end_time
                 FROM transcriptions t
                 WHERE t.meeting_id = :mid
-                  AND t.text @@ plainto_tsquery('spanish', :query)
+                  AND t.status = 'final'
+                  AND to_tsvector('spanish', t.text) @@ plainto_tsquery('spanish', :query)
                 ORDER BY t.start_time
                 LIMIT 5
             """),

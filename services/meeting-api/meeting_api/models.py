@@ -4,7 +4,7 @@ from sqlalchemy import (
     ForeignKey, Index, UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.sql import func, text
+from sqlalchemy.sql import func, text as sql_text
 from sqlalchemy.orm import declarative_base, relationship
 from datetime import datetime
 from typing import Optional
@@ -25,7 +25,7 @@ class Meeting(Base):
     bot_container_id = Column(String(255), nullable=True)
     start_time = Column(DateTime, nullable=True)
     end_time = Column(DateTime, nullable=True)
-    data = Column(JSONB, nullable=False, default=text("'{}'::jsonb"))
+    data = Column(JSONB, nullable=False, default=sql_text("'{}'::jsonb"))
     created_at = Column(DateTime, server_default=func.now(), index=True)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
@@ -73,17 +73,19 @@ class Transcription(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     session_uid = Column(String, nullable=True, index=True)
     segment_id = Column(String, nullable=True)
-    status = Column(String(10), nullable=False, server_default=text("'draft'"), default='draft')
+    status = Column(String(10), nullable=False, server_default=sql_text("'draft'"), default='draft')
 
     meeting = relationship("Meeting", back_populates="transcriptions")
 
     __table_args__ = (
         Index('ix_transcription_meeting_start', 'meeting_id', 'start_time'),
-        Index('ix_transcription_meeting_segment', 'meeting_id', 'segment_id',
-              unique=True, postgresql_where=segment_id.isnot(None)),
-        UniqueConstraint('meeting_id', 'session_uid', 'segment_id',
-                         name='uq_transcription_meeting_session_segment',
-                         postgresql_where=text("(segment_id IS NOT NULL)")),
+        Index('ix_transcription_meeting_segment', 'meeting_id', 'segment_id'),
+        Index(
+            'uq_transcription_meeting_session_segment',
+            'meeting_id', 'session_uid', 'segment_id',
+            unique=True,
+            postgresql_where=segment_id.isnot(None),
+        ),
     )
 
 
@@ -139,7 +141,7 @@ class MediaFile(Base):
     duration_seconds = Column(Float, nullable=True)
     extra_metadata = Column(
         "metadata", JSONB, nullable=False,
-        server_default=text("'{}'::jsonb"), default=lambda: {},
+        server_default=sql_text("'{}'::jsonb"), default=lambda: {},
     )
     created_at = Column(DateTime, server_default=func.now())
 

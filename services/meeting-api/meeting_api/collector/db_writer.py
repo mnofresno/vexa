@@ -28,6 +28,7 @@ def create_transcription_object(
     session_uid: Optional[str],
     mapped_speaker_name: Optional[str],
     segment_id: Optional[str] = None,
+    completed: bool = True,
 ) -> Transcription:
     """Map a validated domain segment to a Transcription ORM object.
 
@@ -44,7 +45,7 @@ def create_transcription_object(
         session_uid=session_uid,
         segment_id=segment_id,
         created_at=datetime.utcnow(),
-        status="draft",
+        status="final" if completed else "draft",
     )
 
 
@@ -78,18 +79,28 @@ async def upsert_transcription(db: AsyncSession, t: Transcription) -> None:
                 speaker  = EXCLUDED.speaker,
                 end_time = EXCLUDED.end_time,
                 status   = CASE
-                    WHEN transcriptions.status = 'draft' AND EXCLUDED.status = 'final'
-                        THEN 'final'
-                    WHEN transcriptions.status = 'draft' AND EXCLUDED.status = 'draft'
-                        AND length(EXCLUDED.text) >= length(transcriptions.text)
-                        THEN 'draft'
-                    ELSE transcriptions.status
+                    WHEN transcriptions.status = 'final' THEN 'final'
+                    WHEN EXCLUDED.status = 'final' THEN 'final'
+                    ELSE 'draft'
                 END,
                 created_at = CASE
                     WHEN transcriptions.status = 'draft' AND EXCLUDED.status = 'final'
                         THEN EXCLUDED.created_at
                     ELSE transcriptions.created_at
                 END
+            WHERE
+                (
+                    transcriptions.status = 'draft'
+                    AND (
+                        EXCLUDED.status = 'final'
+                        OR length(EXCLUDED.text) >= length(transcriptions.text)
+                    )
+                )
+                OR (
+                    transcriptions.status = 'final'
+                    AND EXCLUDED.status = 'final'
+                    AND length(EXCLUDED.text) >= length(transcriptions.text)
+                )
         """),
         {
             "mid": t.meeting_id, "start": t.start_time, "end": t.end_time,
@@ -182,6 +193,7 @@ async def process_redis_to_postgres(
                                             "speaker"
                                         ),
                                         segment_id=segment_data.get("segment_id"),
+                                        completed=bool(segment_data.get("completed", True)),
                                     )
                                 )
                                 segments_to_delete.setdefault(

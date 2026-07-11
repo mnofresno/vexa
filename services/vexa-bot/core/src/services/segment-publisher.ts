@@ -397,18 +397,11 @@ export class SegmentPublisher {
         ...(s.absolute_end_time && { absolute_end_time: s.absolute_end_time }),
       });
 
-      // XADD confirmed segments for persistence — versioned envelope per segment
+      // XADD confirmed segments for persistence through the same guarded path
+      // used by single-segment publishing: required IDs, Redis retry, counters
+      // and failure telemetry.
       for (const seg of confirmed) {
-        const envelope = {
-          schema_version: ENVELOPE_SCHEMA_VERSION,
-          type: 'transcription',
-          meeting_id: Number(this.meetingId),
-          session_uid: this.sessionUid,
-          segments: [mapSeg(seg)],
-        };
-        await client.xAdd(this.segmentStreamKey, '*', {
-          payload: JSON.stringify(envelope),
-        });
+        await this.publishSegment(seg);
       }
 
       // Store pending snapshot in Redis (full replace per speaker, short TTL)

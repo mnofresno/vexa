@@ -115,7 +115,7 @@ def _compute_fingerprint(segments) -> str:
     h = hashlib.sha256()
     sorted_segs = sorted(segments, key=lambda s: s.start_time)
     for seg in sorted_segs:
-        h.update(f"{seg.id}:{seg.text}".encode("utf-8"))
+        h.update(f"{seg.segment_id or seg.id}:{seg.text}".encode("utf-8"))
     return h.hexdigest()
 
 
@@ -125,7 +125,7 @@ async def fetch_transcripts_for_meeting(meeting_id: int):
         result = await db.execute(
             select(Transcription)
             .where(Transcription.meeting_id == meeting_id)
-            .where(Transcription.status == "finalized")
+            .where(Transcription.status == "final")
             .order_by(Transcription.start_time)
         )
         return result.scalars().all()

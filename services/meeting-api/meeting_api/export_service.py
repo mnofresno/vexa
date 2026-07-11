@@ -1,7 +1,7 @@
 """Markdown export service — generate .md from meeting record.
 
 PR7 changes:
-- Export only finalized ordered segments (status != 'draft').
+    - Export only final ordered segments.
 - Include recording metadata, speakers, notes, decisions and action items.
 - Escape untrusted Markdown content to prevent injection.
 - Add provenance metadata: meeting ID, generated timestamp and component versions.
@@ -53,7 +53,7 @@ def _md_escape(text: str) -> str:
 async def export_meeting_markdown(meeting_id: int, db: AsyncSession) -> Optional[str]:
     """Generate a Markdown document for a meeting.
 
-    Only exports finalized segments (status != 'draft').  Includes recording
+    Only exports final segments. Includes recording
     metadata, speaker summary, AI notes (decisions, action items, summary,
     unresolved questions), and provenance footer.
 
@@ -68,7 +68,7 @@ async def export_meeting_markdown(meeting_id: int, db: AsyncSession) -> Optional
         select(Transcription)
         .where(
             Transcription.meeting_id == meeting_id,
-            Transcription.status != "draft",
+            Transcription.status == "final",
         )
         .order_by(Transcription.start_time)
     )

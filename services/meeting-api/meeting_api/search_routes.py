@@ -1,12 +1,10 @@
 """Search routes — Phase 3 MVP.
 
-PR7: user_id no longer defaults to 1.
-Accept it from the authenticated user session (or a header).
-Until a proper auth dependency is wired, the caller must pass
-`X-User-Id` header or a `user_id` query parameter.
+PR7: user_id no longer defaults to 1. The API gateway injects
+`X-User-Id` after validating the caller's API key.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Header, Query
+from fastapi import APIRouter, Depends, HTTPException, Header
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Annotated, Optional
 
@@ -18,24 +16,14 @@ router = APIRouter()
 
 def _resolve_user_id(
     x_user_id: Annotated[Optional[str], Header()] = None,
-    user_id_param: Annotated[Optional[int], Query()] = None,
 ) -> int:
-    """Resolve the authenticated user ID.
-
-    Priority: X-User-Id header > user_id query parameter.
-    Raises 401 if neither is supplied.
-
-    TODO: replace with a real auth dependency once the gateway
-    provides session claims.
-    """
+    """Resolve the authenticated user ID injected by api-gateway."""
     if x_user_id is not None:
         try:
             return int(x_user_id)
         except ValueError:
-            pass
-    if user_id_param is not None:
-        return user_id_param
-    raise HTTPException(status_code=401, detail="Authentication required: provide X-User-Id header or user_id parameter")
+            raise HTTPException(status_code=401, detail="Invalid X-User-Id header")
+    raise HTTPException(status_code=401, detail="Authentication required")
 
 
 @router.get("/internal/search")
