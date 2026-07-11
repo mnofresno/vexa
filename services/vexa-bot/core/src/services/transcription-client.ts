@@ -8,9 +8,11 @@ export interface TranscriptionWord {
 }
 
 export interface TranscriptionSegment {
+  id: string;
   start: number;
   end: number;
   text: string;
+  speaker?: string | null;
   avg_logprob?: number;
   no_speech_prob?: number;
   compression_ratio?: number;
@@ -23,6 +25,7 @@ export interface TranscriptionResult {
   language_probability?: number;
   duration: number;
   segments: TranscriptionSegment[];
+  model: string;
 }
 
 export interface TranscriptionClientConfig {
@@ -42,6 +45,30 @@ export interface TranscriptionClientConfig {
   /** Minimum silence duration (ms) for VAD to split segments. Lower = more splits at natural pauses.
    *  Default: server default (160ms). Use ~100ms for more granular segments. */
   minSilenceDurationMs?: number;
+  /** Voxtral model ID. Default: 'mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit' */
+  modelId?: string;
+}
+
+/**
+ * Validate and cast the Voxtral response to TranscriptionResult.
+ * Throws on missing or incorrectly typed required fields.
+ */
+function validateTranscriptionResult(data: any): TranscriptionResult {
+  if (typeof data.text !== 'string') throw new Error('Missing text field');
+  if (typeof data.language !== 'string') throw new Error('Missing language field');
+  if (typeof data.duration !== 'number') throw new Error('Missing duration field');
+  if (!Array.isArray(data.segments)) throw new Error('Missing segments array');
+  if (typeof data.model !== 'string') throw new Error('Missing model field');
+
+  for (const seg of data.segments) {
+    if (typeof seg.id !== 'string') throw new Error('Segment missing id');
+    if (typeof seg.start !== 'number' || typeof seg.end !== 'number') {
+      throw new Error('Segment missing valid start/end');
+    }
+    if (typeof seg.text !== 'string') throw new Error('Segment missing text');
+  }
+
+  return data as TranscriptionResult;
 }
 
 /**
@@ -57,6 +84,7 @@ export class TranscriptionClient {
   private sampleRate: number;
   private maxSpeechDurationSec: number | undefined;
   private minSilenceDurationMs: number | undefined;
+  private modelId: string;
   constructor(config: TranscriptionClientConfig) {
     // Ensure serviceUrl ends with the transcriptions endpoint
     this.serviceUrl = config.serviceUrl.replace(/\/+$/, '');
@@ -69,6 +97,7 @@ export class TranscriptionClient {
     this.sampleRate = config.sampleRate ?? 16000;
     this.maxSpeechDurationSec = config.maxSpeechDurationSec;
     this.minSilenceDurationMs = config.minSilenceDurationMs;
+    this.modelId = config.modelId ?? 'mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit';
   }
 
   /**
@@ -84,7 +113,15 @@ export class TranscriptionClient {
         const result = await this.sendRequest(wavBuffer, language, prompt);
         return result;
       } catch (err: any) {
-        const isTransient = err.statusCode === 503 || err.statusCode === 429 || err.statusCode === 500 || !err.statusCode;
+        // Voxtral returns 503 with Retry-After header; handle it explicitly
+        if (err.statusCode === 503) {
+          const retryAfter = 2000; // default 2s fallback
+          log(`[TranscriptionClient] Service busy (503), retrying in ${retryAfter}ms...`);
+          await new Promise(resolve => setTimeout(resolve, retryAfter));
+          continue;
+        }
+
+        const isTransient = err.statusCode === 429 || err.statusCode === 500 || !err.statusCode;
         const isLastAttempt = attempt === this.maxRetries;
 
         if (isTransient && !isLastAttempt) {
@@ -126,7 +163,7 @@ export class TranscriptionClient {
     parts.push(Buffer.from(
       `--${boundary}\r\n` +
       `Content-Disposition: form-data; name="model"\r\n\r\n` +
-      `whisper-1\r\n`
+      `${this.modelId}\r\n`
     ));
 
     // Response format part
@@ -209,21 +246,18 @@ export class TranscriptionClient {
         throw err;
       }
 
-      const data = await response.json() as any;
+      const data = await response.json();
+      const result = validateTranscriptionResult(data);
 
       return {
-        text: data.text || '',
-        language: data.language || language || 'unknown',
-        language_probability: data.language_probability ?? 0,
-        duration: data.duration || 0,
-        segments: (data.segments || []).map((s: any) => ({
-          start: s.start || 0,
-          end: s.end || 0,
-          text: s.text || '',
+        ...result,
+        segments: result.segments.map(s => ({
+          ...s,
+          speaker: s.speaker,
+          words: s.words,
           avg_logprob: s.avg_logprob,
           no_speech_prob: s.no_speech_prob,
           compression_ratio: s.compression_ratio,
-          words: s.words,
         })),
       };
     } finally {
