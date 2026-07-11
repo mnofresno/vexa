@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { createHash } from 'crypto';
 import { log } from '../utils';
 import { logJSON } from '../utils/log';
 import http from 'http';
@@ -114,14 +115,23 @@ export class RecordingService {
   }
 
   /**
+   * Calculate SHA-256 checksum of a buffer.
+   */
+  private calculateSHA256(data: Buffer): string {
+    return createHash('sha256').update(data).digest('hex');
+  }
+
+  /**
    * Upload the finalized recording to the meeting-api internal upload endpoint.
    * Retries up to 3 times with exponential backoff on transient failures.
+   * Uses an idempotency key to prevent duplicate uploads.
    */
   async upload(callbackUrl: string, token: string): Promise<void> {
     const maxRetries = 3;
     const baseDelayMs = 1000;
     const uploadTimeoutMs = 30_000;
 
+    // Ensure the file is finalized before uploading
     const filePath = this.isFinalized ? this.filePath : await this.finalize();
     const fileData = await fs.promises.readFile(filePath);
     const fileStats = await fs.promises.stat(filePath);
@@ -129,6 +139,10 @@ export class RecordingService {
     const durationSeconds = format === 'wav'
       ? this.totalSamples / this.sampleRate
       : (this.startTime > 0 ? (Date.now() - this.startTime) / 1000 : undefined);
+    const checksum = this.calculateSHA256(fileData);
+
+    // Idempotency key: unique per recording session and file content
+    const idempotencyKey = `recording-${this.meetingId}-${this.sessionUid}-${format}-${checksum}`;
 
     log(`[Recording] Uploading ${fileStats.size} bytes to ${callbackUrl}`);
 
@@ -141,6 +155,8 @@ export class RecordingService {
       channels: this.channels,
       duration_seconds: durationSeconds,
       file_size_bytes: fileStats.size,
+      checksum: checksum,
+      capture_start_time: this.startTime > 0 ? new Date(this.startTime).toISOString() : undefined,
     });
 
     // Build multipart body
@@ -156,7 +172,11 @@ export class RecordingService {
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
-        await this._sendUpload(callbackUrl, token, boundary, body, uploadTimeoutMs);
+        await this._sendUpload(callbackUrl, token, boundary, body, uploadTimeoutMs, idempotencyKey, {
+          file_size_bytes: fileStats.size,
+          duration_seconds: durationSeconds,
+          checksum: checksum,
+        });
         return; // Success
       } catch (err: any) {
         const isLastAttempt = attempt === maxRetries;
@@ -300,10 +320,18 @@ export class RecordingService {
     }
   }
 
-  private _sendUpload(callbackUrl: string, token: string, boundary: string, body: Buffer, timeoutMs: number): Promise<void> {
+  private _sendUpload(callbackUrl: string, token: string, boundary: string, body: Buffer, timeoutMs: number, idempotencyKey?: string, uploadMeta?: { file_size_bytes?: number, duration_seconds?: number, checksum?: string }): Promise<void> {
     return new Promise((resolve, reject) => {
       const url = new URL(callbackUrl);
       const transport = url.protocol === 'https:' ? https : http;
+      const headers: Record<string, string> = {
+        'Content-Type': `multipart/form-data; boundary=${boundary}`,
+        'Content-Length': body.length.toString(),
+        'Authorization': `Bearer ${token}`,
+      };
+      if (idempotencyKey) {
+        headers['X-Idempotency-Key'] = idempotencyKey;
+      }
       const req = transport.request(
         {
           hostname: url.hostname,
@@ -311,11 +339,7 @@ export class RecordingService {
           path: url.pathname,
           method: 'POST',
           timeout: timeoutMs,
-          headers: {
-            'Content-Type': `multipart/form-data; boundary=${boundary}`,
-            'Content-Length': body.length,
-            'Authorization': `Bearer ${token}`,
-          },
+          headers,
         },
         (res) => {
           let responseData = '';
@@ -324,10 +348,13 @@ export class RecordingService {
             if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
               logJSON({
                 level: "info",
-                msg: "[Recording] Upload successful",
+                msg: "[Recording] Upload successful - metadata stored in Meeting API",
                 http_status: res.statusCode,
                 recording_meeting_id: this.meetingId,
                 recording_session_uid: this.sessionUid,
+                file_size_bytes: uploadMeta?.file_size_bytes,
+                duration_seconds: uploadMeta?.duration_seconds,
+                checksum: uploadMeta?.checksum,
               });
               resolve();
             } else {

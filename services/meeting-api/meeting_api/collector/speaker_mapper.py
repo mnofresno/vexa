@@ -53,7 +53,7 @@ def map_speaker_to_segment(
     speaker_events_for_session: List[Tuple[str, float]], # List of (event_json_str, timestamp_ms)
     session_end_time_ms: Optional[float] = None
 ) -> Dict[str, Any]:
-    """Maps a speaker to a transcription segment based on speaker events.
+    """Maps a speaker to a transcription segment based on platform speaker events.
 
     Args:
         segment_start_ms: Start time of the transcription segment in milliseconds.
@@ -64,9 +64,11 @@ def map_speaker_to_segment(
 
     Returns:
         A dictionary containing:
-            'speaker_name': Name of the identified speaker, or None.
-            'participant_id_meet': Google Meet participant ID, or None.
+            'speaker_name': Display name of the identified speaker, or None.
+            'participant_id': Platform participant identifier (e.g., participant_id_meet), or None.
+            'mapping_confidence': Float 0-1 indicating confidence in the mapping.
             'status': Mapping status (e.g., MAPPED, UNKNOWN, MULTIPLE).
+            'overlap_count': Number of overlapping speakers (for overlap awareness).
     """
     active_speaker_name: Optional[str] = None
     active_participant_id: Optional[str] = None
@@ -75,8 +77,10 @@ def map_speaker_to_segment(
     if not speaker_events_for_session:
         return {
             "speaker_name": None,
-            "participant_id_meet": None,
-            "status": STATUS_NO_SPEAKER_EVENTS
+            "participant_id": None,
+            "mapping_confidence": None,
+            "status": STATUS_NO_SPEAKER_EVENTS,
+            "overlap_count": 0,
         }
 
     # Parse speaker events from JSON string to dict
@@ -91,7 +95,8 @@ def map_speaker_to_segment(
             continue
 
     if not parsed_events:
-        return {"speaker_name": None, "participant_id_meet": None, "status": STATUS_ERROR} # Error parsing all events
+        return {"speaker_name": None, "participant_id": None, "mapping_confidence": None,
+                "status": STATUS_ERROR, "overlap_count": 0}  # Error parsing all events
 
     # Find speaker(s) active during the segment interval
     # Use a list to store candidates with their events, since we need to match by both ID and name
@@ -193,23 +198,36 @@ def map_speaker_to_segment(
     if not active_speakers_in_segment:
         logger.warning(f"[MapSpeaker] No active speakers found for segment [{segment_start_ms:.0f}ms, {segment_end_ms:.0f}ms] - returning UNKNOWN")
         mapping_status = STATUS_UNKNOWN
+        mapping_confidence = 0.0
+        overlap_count = 0
     elif len(active_speakers_in_segment) == 1:
         active_speaker_name = active_speakers_in_segment[0]["name"]
         active_participant_id = active_speakers_in_segment[0]["id"]
         mapping_status = STATUS_MAPPED
-        logger.info(f"[MapSpeaker] MAPPED segment [{segment_start_ms:.0f}ms, {segment_end_ms:.0f}ms] to {active_speaker_name} (ID: {active_participant_id})")
+        # Confidence based on how much of the segment is covered by the speaker
+        seg_duration = segment_end_ms - segment_start_ms
+        mapping_confidence = min(1.0, active_speakers_in_segment[0]["overlap_duration"] / max(1, seg_duration))
+        overlap_count = 1
+        logger.info(f"[MapSpeaker] MAPPED segment [{segment_start_ms:.0f}ms, {segment_end_ms:.0f}ms] to {active_speaker_name} (ID: {active_participant_id}), confidence={mapping_confidence:.2f}")
     else:
-        # Multiple speakers overlap. Prioritize by longest overlap.
+        # Multiple speakers overlap — preserve the overlap state instead of
+        # forcing a single label. Still pick the best candidate for display but
+        # flag it so downstream can handle it.
         active_speakers_in_segment.sort(key=lambda x: x["overlap_duration"], reverse=True)
         active_speaker_name = active_speakers_in_segment[0]["name"]
         active_participant_id = active_speakers_in_segment[0]["id"]
         mapping_status = STATUS_MULTIPLE
-        logger.info(f"[MapSpeaker] MULTIPLE speakers for segment [{segment_start_ms:.0f}ms, {segment_end_ms:.0f}ms]. Selected {active_speaker_name} (overlap: {active_speakers_in_segment[0]['overlap_duration']:.0f}ms) over {len(active_speakers_in_segment)-1} other(s)")
+        seg_duration = segment_end_ms - segment_start_ms
+        mapping_confidence = min(1.0, active_speakers_in_segment[0]["overlap_duration"] / max(1, seg_duration))
+        overlap_count = len(active_speakers_in_segment)
+        logger.info(f"[MapSpeaker] MULTIPLE speakers for segment [{segment_start_ms:.0f}ms, {segment_end_ms:.0f}ms]. Selected {active_speaker_name} (overlap: {active_speakers_in_segment[0]['overlap_duration']:.0f}ms) over {overlap_count - 1} other(s), confidence={mapping_confidence:.2f}")
 
     return {
         "speaker_name": active_speaker_name,
-        "participant_id_meet": active_participant_id,
-        "status": mapping_status
+        "participant_id": active_participant_id,
+        "mapping_confidence": round(mapping_confidence, 3) if mapping_confidence else None,
+        "status": mapping_status,
+        "overlap_count": overlap_count,
     }
 
 # NEW Utility function to centralize fetching and mapping logic
@@ -227,11 +245,19 @@ async def get_speaker_mapping_for_segment(
     """
     if not session_uid:
         logger.warning(f"{context_log_msg} No session_uid provided. Cannot map speakers.")
-        return {"speaker_name": None, "participant_id_meet": None, "status": STATUS_UNKNOWN}
+        return {
+            "speaker_name": None,
+            "participant_id": None,
+            "mapping_confidence": None,
+            "status": STATUS_UNKNOWN,
+            "overlap_count": 0,
+        }
 
     mapped_speaker_name: Optional[str] = None
     mapping_status: str = STATUS_UNKNOWN
     active_participant_id: Optional[str] = None
+    mapping_confidence: Optional[float] = None
+    overlap_count: int = 0
 
     try:
         speaker_event_key = f"{config_speaker_event_key_prefix}:{session_uid}"
@@ -313,11 +339,17 @@ async def get_speaker_mapping_for_segment(
         )
 
         mapped_speaker_name = mapping_result.get("speaker_name")
-        active_participant_id = mapping_result.get("participant_id_meet")
+        active_participant_id = mapping_result.get("participant_id")
+        mapping_confidence = mapping_result.get("mapping_confidence")
         mapping_status = mapping_result.get("status", STATUS_ERROR)
+        overlap_count = mapping_result.get("overlap_count", 0)
 
         if mapping_status != STATUS_NO_SPEAKER_EVENTS:
-             logger.info(f"{log_prefix_detail} Result: Name='{mapped_speaker_name}', Status='{mapping_status}'")
+             logger.info(
+                 f"{log_prefix_detail} Result: Name='{mapped_speaker_name}', "
+                 f"Status='{mapping_status}', Confidence={mapping_confidence}, "
+                 f"Overlap={overlap_count}"
+             )
 
     except redis.exceptions.RedisError as re:
         logger.error(f"{context_log_msg} UID:{session_uid} Seg:{segment_start_ms}-{segment_end_ms} Redis error fetching/processing speaker events: {re}", exc_info=True)
@@ -328,6 +360,8 @@ async def get_speaker_mapping_for_segment(
 
     return {
         "speaker_name": mapped_speaker_name,
-        "participant_id_meet": active_participant_id,
-        "status": mapping_status
+        "participant_id": active_participant_id,
+        "mapping_confidence": mapping_confidence,
+        "status": mapping_status,
+        "overlap_count": overlap_count,
     }

@@ -2,12 +2,19 @@
 
 Full-text search using PG tsvector + semantic embeddings.
 Works with any LLM provider configured via AI_MODEL.
+
+PR7 changes:
+- Use plainto_tsquery instead of manually assembled to_tsquery.
+- Return citation fields: meeting_id, segment_id, speaker,
+  start_time, end_time and snippet.
+- Document the required GIN index (see module docstring below).
 """
 
 import json
 import logging
 import os
 import math
+import time
 
 import httpx
 from sqlalchemy import select, text
@@ -18,6 +25,17 @@ from .models import Meeting, Transcription
 from .intelligence_config import AI_MODEL, AI_API_KEY, AI_BASE_URL
 
 logger = logging.getLogger("meeting_api.search")
+
+# ---------------------------------------------------------------------------
+# Required GIN index (create once — add to a migration or run manually):
+#
+#   CREATE INDEX ix_transcriptions_text_tsvector
+#       ON transcriptions
+#       USING gin (to_tsvector('spanish', text));
+#
+# Without this index the full-text search falls back to sequential scan,
+# which will violate the MVP <2s latency gate on anything but trivial data.
+# ---------------------------------------------------------------------------
 
 
 async def search_meetings(
@@ -36,13 +54,25 @@ async def search_meetings(
                 {
                     "meeting": {...},
                     "matched_segments": [
-                        {"text": str, "speaker": str, "start_time": float, "timestamp": str}
+                        {
+                            "meeting_id": int,
+                            "segment_id": str | None,
+                            "text": str,
+                            "speaker": str,
+                            "start_time": float,
+                            "end_time": float,
+                            "timestamp": str,
+                        }
                     ]
                 }
             ]
         }
     """
-    # Full-text search using PG tsvector on transcripts
+    t0 = time.monotonic()
+
+    # --- Full-text search using PG plainto_tsquery (safer, no manual op-
+    # --- assembly.  Accepts natural-language input and builds the query
+    # --- operator string internally.)
     stmt = text("""
         SELECT m.id, m.platform, m.platform_specific_id, m.status,
                m.start_time, m.end_time, m.data,
@@ -50,7 +80,7 @@ async def search_meetings(
         FROM meetings m
         LEFT JOIN transcriptions t ON t.meeting_id = m.id
         WHERE m.user_id = :user_id
-          AND t.text @@ to_tsquery('spanish', :query)
+          AND t.text @@ plainto_tsquery('spanish', :query)
         GROUP BY m.id
         ORDER BY m.created_at DESC
         LIMIT :limit
@@ -67,14 +97,15 @@ async def search_meetings(
     for row in rows:
         meeting_id = row[0]
 
-        # Get matched segments
+        # Get matched segments — now returns citation fields
         seg_result = await db.execute(
             text("""
-                SELECT text, speaker, start_time
-                FROM transcriptions
-                WHERE meeting_id = :mid
-                  AND text @@ to_tsquery('spanish', :query)
-                ORDER BY start_time
+                SELECT t.id, t.segment_id, t.text, t.speaker,
+                       t.start_time, t.end_time
+                FROM transcriptions t
+                WHERE t.meeting_id = :mid
+                  AND t.text @@ plainto_tsquery('spanish', :query)
+                ORDER BY t.start_time
                 LIMIT 5
             """),
             {"mid": meeting_id, "query": query},
@@ -83,11 +114,15 @@ async def search_meetings(
 
         matched_segments = []
         for seg in segments:
-            mins, secs = divmod(int(seg[2]), 60)
+            seg_id, segment_id, seg_text, speaker, st, et = seg
+            mins, secs = divmod(int(st), 60)
             matched_segments.append({
-                "text": seg[0],
-                "speaker": seg[1] or "unknown",
-                "start_time": seg[2],
+                "meeting_id": meeting_id,
+                "segment_id": segment_id,
+                "text": seg_text,
+                "speaker": speaker or "unknown",
+                "start_time": st,
+                "end_time": et,
                 "timestamp": f"{mins:02d}:{secs:02d}",
             })
 
@@ -104,6 +139,10 @@ async def search_meetings(
             },
             "matched_segments": matched_segments,
         })
+
+    elapsed = time.monotonic() - t0
+    logger.info("search_meetings: query=%r user_id=%d total=%d elapsed=%.3fs",
+                query, user_id, len(results), elapsed)
 
     return {
         "query": query,
@@ -212,15 +251,19 @@ async def ask_about_meetings(
     except Exception as e:
         answer = f"Error calling AI: {e}"
 
-    # Build citations from search results
+    # Build citations from search results — include segment_id for linking
     citations = []
     for r in search_result["results"][:3]:
         for seg in r["matched_segments"][:2]:
             citations.append({
                 "meeting_id": r["meeting"]["id"],
+                "segment_id": seg.get("segment_id"),
                 "platform": r["meeting"]["platform"],
                 "native_id": r["meeting"]["native_id"],
                 "timestamp": seg["timestamp"],
+                "speaker": seg.get("speaker", "unknown"),
+                "start_time": seg.get("start_time"),
+                "end_time": seg.get("end_time"),
                 "text": seg["text"][:100],
             })
 

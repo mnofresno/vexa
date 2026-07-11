@@ -138,6 +138,7 @@ async def internal_upload_recording(
     # Legacy one-shot callers that don't pass chunk_seq default to 0 with
     # is_final=True; behavior is byte-identical to today for that path.
     chunk_seq: int = Form(default=0),
+    idempotency_key: Optional[str] = Form(default=None),
     db: AsyncSession = Depends(get_db),
 ):
     if metadata:
@@ -157,6 +158,12 @@ async def internal_upload_recording(
                 chunk_seq = int(meta.get("chunk_seq"))
             except (TypeError, ValueError):
                 pass
+        # PR4: extract checksum and capture_start_time from metadata
+        checksum = meta.get("checksum")
+        capture_start_time = meta.get("capture_start_time")
+    else:
+        checksum = None
+        capture_start_time = None
 
     if not session_uid:
         raise HTTPException(status_code=422, detail="session_uid is required")
@@ -336,6 +343,27 @@ async def internal_upload_recording(
             rec_payload = dict(existing_rec)
             was_completed = rec_payload.get("status") == RecordingStatus.COMPLETED.value
 
+            # PR4: Idempotency check for meeting_data mode — if an existing
+            # media_files entry already has the same checksum, return early.
+            if checksum and is_final:
+                for mf in rec_payload.get("media_files") or []:
+                    if (
+                        mf.get("type") == media_type
+                        and mf.get("metadata", {}).get("checksum") == checksum
+                    ):
+                        logger.info(
+                            "[PR4] Idempotent upload callback meeting_id=%s recording_id=%s media_type=%s checksum=%s",
+                            meeting.id, rec_payload.get("id"), media_type, checksum,
+                        )
+                        return {
+                            "recording_id": rec_payload["id"],
+                            "media_file_id": mf.get("id"),
+                            "storage_path": mf.get("storage_path"),
+                            "status": rec_payload["status"],
+                            "chunk_seq": chunk_seq,
+                            "idempotent": True,
+                        }
+
         status_transitioned_to_completed = False
         prior_media_files = list(rec_payload.get("media_files") or [])
         prior_count = len(prior_media_files)
@@ -400,7 +428,13 @@ async def internal_upload_recording(
             "duration_seconds": duration_seconds,
             "chunk_seq": chunk_seq,
             "first_chunk_at": first_chunk_at,
-            "metadata": {"sample_rate": sample_rate} if sample_rate else {},
+            "metadata": {
+                k: v for k, v in {
+                    "sample_rate": sample_rate,
+                    "checksum": checksum,
+                    "capture_start_time": capture_start_time,
+                }.items() if v is not None
+            },
             "created_at": datetime.utcnow().isoformat(),
             "is_final": new_is_final,
             "finalized_at": (prior_same_type or {}).get("finalized_at") if master_finalized else (prior_same_type or {}).get("finalized_at"),
@@ -422,6 +456,22 @@ async def internal_upload_recording(
             chunk_seq, prior_count, chunk_action, is_final,
         )
         if is_final:
+            # PR4: Verify object exists in storage before marking completed
+            storage = get_storage_client()
+            try:
+                object_exists = storage.file_exists(storage_path)
+            except Exception as e:
+                logger.error(f"Storage file_exists check failed for {storage_path}: {e}", exc_info=True)
+                object_exists = False
+            if not object_exists:
+                logger.error(
+                    "[PR4] Storage object not found meeting_id=%s recording_id=%s storage_path=%s",
+                    meeting.id, rec_payload.get("id"), storage_path,
+                )
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Storage object not found at {storage_path}"
+                )
             rec_payload["status"] = RecordingStatus.COMPLETED.value
             rec_payload["completed_at"] = datetime.utcnow().isoformat()
             status_transitioned_to_completed = not was_completed
@@ -461,9 +511,54 @@ async def internal_upload_recording(
     # intermediate chunks upload to MinIO for SIGKILL safety but do NOT create
     # a MediaFile row. On is_final=true, one MediaFile row per media_type is
     # created (replacing any earlier same-type row for this Recording).
+    #
+    # PR4: Upload callbacks are idempotent via idempotency_key. When a repeated
+    # callback arrives with the same key, return the prior result without re-writing.
+    # PR4: Verify object exists in MinIO before marking completed.
+    # PR4: Persist checksum and capture_start_time in extra_metadata.
+    
+    # Idempotency check: look for existing MediaFile with same checksum
+    if checksum and is_final:
+        existing_by_checksum = select(MediaFile).where(
+            MediaFile.recording_id == recording.id,
+            MediaFile.type == media_type,
+            MediaFile.extra_metadata["checksum"].astext == checksum,
+        )
+        matched = (await db.execute(existing_by_checksum)).scalars().first()
+        if matched:
+            logger.info(
+                "[PR4] Idempotent upload callback meeting_id=%s recording_id=%s media_type=%s checksum=%s",
+                meeting.id, recording.id, media_type, checksum,
+            )
+            return {
+                "recording_id": recording.id,
+                "media_file_id": matched.id,
+                "storage_path": matched.storage_path,
+                "status": recording.status,
+                "chunk_seq": chunk_seq,
+                "idempotent": True,
+            }
+    
     was_completed = recording.status == "completed"
     media_file = None
     if is_final:
+        # Verify the object exists in storage before marking completed
+        storage = get_storage_client()
+        try:
+            object_exists = storage.file_exists(storage_path)
+        except Exception as e:
+            logger.error(f"Storage file_exists check failed for {storage_path}: {e}", exc_info=True)
+            object_exists = False
+        if not object_exists:
+            logger.error(
+                "[PR4] Storage object not found meeting_id=%s recording_id=%s storage_path=%s",
+                meeting.id, recording.id if recording else legacy_id, storage_path,
+            )
+            raise HTTPException(
+                status_code=500,
+                detail=f"Storage object not found at {storage_path}"
+            )
+        
         # Retire any existing MediaFile for this recording + media_type.
         from sqlalchemy import delete
         await db.execute(
@@ -475,6 +570,11 @@ async def internal_upload_recording(
         file_metadata = {"chunk_seq": chunk_seq}
         if sample_rate:
             file_metadata["sample_rate"] = sample_rate
+        # PR4: persist checksum and capture_start_time
+        if checksum:
+            file_metadata["checksum"] = checksum
+        if capture_start_time:
+            file_metadata["capture_start_time"] = capture_start_time
         media_file = MediaFile(
             recording_id=recording.id,
             type=media_type,

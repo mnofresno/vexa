@@ -4,12 +4,15 @@ Triggers on meeting.completed, fetches transcripts, calls LLM,
 and persists structured notes into meeting.data['ai_notes'].
 """
 
+import hashlib
 import json
 import logging
 import os
 from datetime import datetime
+from typing import List, Optional
 
 import httpx
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from .database import async_session_local
@@ -24,6 +27,35 @@ from .intelligence_config import (
     AI_NOTES_TIMEOUT,
     MAX_TRANSCRIPT_TOKENS,
 )
+
+
+# ---------------------------------------------------------------------------
+# Pydantic model for validated AI notes output
+# ---------------------------------------------------------------------------
+
+class AIMoment(BaseModel):
+    timestamp: str = Field(description="MM:SS timestamp in transcript")
+    speaker: str = Field(description="speaker name or 'unknown'")
+    text: str = Field(description="what was said")
+
+
+class AIActionItem(BaseModel):
+    description: str = Field(description="what to do")
+    assignee: str = Field(description="who (or 'unassigned')")
+    deadline: Optional[str] = Field(default=None, description="date if mentioned")
+
+
+class AINotes(BaseModel):
+    summary: str = Field(description="3-5 sentence meeting summary")
+    key_moments: List[AIMoment] = Field(default_factory=list)
+    decisions: List[str] = Field(default_factory=list)
+    action_items: List[AIActionItem] = Field(default_factory=list)
+    unresolved: List[str] = Field(default_factory=list, description="open questions")
+
+
+# Prompt version — bump when the system prompt changes so cached notes
+# are regenerated with the new prompt.
+AI_NOTES_PROMPT_VERSION = "1"
 
 logger = logging.getLogger("meeting_api.meeting_intelligence")
 
@@ -74,17 +106,41 @@ def _build_transcript_text(segments):
     return "\n".join(lines)
 
 
+def _compute_fingerprint(segments) -> str:
+    """Compute a SHA-256 fingerprint from transcript segment IDs + text.
+
+    Used to detect whether the underlying transcript has changed so we can
+    skip regeneration when nothing meaningful has shifted.
+    """
+    h = hashlib.sha256()
+    sorted_segs = sorted(segments, key=lambda s: s.start_time)
+    for seg in sorted_segs:
+        h.update(f"{seg.id}:{seg.text}".encode("utf-8"))
+    return h.hexdigest()
+
+
 async def fetch_transcripts_for_meeting(meeting_id: int):
-    """Fetch all Transcription rows for a meeting from the DB."""
+    """Fetch finalized Transcription rows for a meeting, ordered by start_time."""
     async with async_session_local() as db:
         result = await db.execute(
-            select(Transcription).where(Transcription.meeting_id == meeting_id).order_by(Transcription.start_time)
+            select(Transcription)
+            .where(Transcription.meeting_id == meeting_id)
+            .where(Transcription.status == "finalized")
+            .order_by(Transcription.start_time)
         )
         return result.scalars().all()
 
 
 async def generate_ai_notes(meeting_id: int):
     """Generate AI notes for a completed meeting and persist to meeting.data.
+
+    - Requires at least one finalized transcript segment.
+    - Skips regeneration when the stored fingerprint matches current segments
+      and the prompt version has not changed.
+    - Validates LLM output with AINotes Pydantic model.
+    - Stores model, prompt version, transcript fingerprint and generation
+      timestamp beside ai_notes.
+    - Keeps previous valid notes when regeneration fails.
 
     Returns True if notes were generated and saved, False otherwise.
     """
@@ -97,11 +153,30 @@ async def generate_ai_notes(meeting_id: int):
         logger.error("AI_MODEL is not set or has invalid format (expected provider/model)")
         return False
 
-    # Fetch transcripts
+    # Fetch transcripts (only finalized)
     segments = await fetch_transcripts_for_meeting(meeting_id)
     if not segments:
-        logger.info(f"No transcript segments for meeting {meeting_id}, skipping AI notes")
+        logger.info(f"No finalized transcript segments for meeting {meeting_id}, skipping AI notes")
         return False
+
+    # Compute fingerprint to detect transcript changes
+    fingerprint = _compute_fingerprint(segments)
+
+    # Check if regeneration is needed
+    async with async_session_local() as db:
+        meeting = await db.get(Meeting, meeting_id)
+        if not meeting:
+            logger.error(f"Meeting {meeting_id} not found for AI notes")
+            return False
+
+        stored_fp = (meeting.data or {}).get("ai_notes_fingerprint")
+        stored_pv = (meeting.data or {}).get("ai_notes_prompt_version")
+        if fingerprint == stored_fp and stored_pv == AI_NOTES_PROMPT_VERSION:
+            logger.info(
+                f"Transcript fingerprint unchanged for meeting {meeting_id} — "
+                f"skipping AI notes regeneration"
+            )
+            return False
 
     transcript_text = _build_transcript_text(segments)
     logger.info(
@@ -136,14 +211,15 @@ async def generate_ai_notes(meeting_id: int):
         else:
             ai_text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
 
-        # Parse JSON from response (strip markdown code fences if present)
-        notes = _parse_ai_notes(ai_text)
+        # Parse + validate through Pydantic model
+        raw = _parse_ai_notes(ai_text)
+        if not raw:
+            raise ValueError("AI returned empty or unparseable JSON")
 
-        if not notes:
-            logger.error(f"AI returned empty notes for meeting {meeting_id}")
-            return False
+        notes_model = AINotes.model_validate(raw)
+        notes_dict = notes_model.model_dump()
 
-        # Persist to meeting.data
+        # Persist to meeting.data — back up previous notes before overwriting
         async with async_session_local() as db:
             meeting = await db.get(Meeting, meeting_id)
             if not meeting:
@@ -151,9 +227,14 @@ async def generate_ai_notes(meeting_id: int):
                 return False
 
             data_dict = dict(meeting.data or {})
-            data_dict["ai_notes"] = notes
+            prev = data_dict.get("ai_notes")
+            if prev:
+                data_dict["ai_notes_previous"] = prev
+            data_dict["ai_notes"] = notes_dict
             data_dict["ai_notes_generated_at"] = datetime.utcnow().isoformat()
             data_dict["ai_notes_model"] = f"{provider}/{model}"
+            data_dict["ai_notes_prompt_version"] = AI_NOTES_PROMPT_VERSION
+            data_dict["ai_notes_fingerprint"] = fingerprint
             meeting.data = data_dict
             from sqlalchemy.orm.attributes import flag_modified
             flag_modified(meeting, "data")
@@ -161,17 +242,19 @@ async def generate_ai_notes(meeting_id: int):
 
         logger.info(
             f"AI notes saved for meeting {meeting_id}: "
-            f"summary={len(notes.get('summary', ''))} chars, "
-            f"moments={len(notes.get('key_moments', []))}, "
-            f"decisions={len(notes.get('decisions', []))}, "
-            f"action_items={len(notes.get('action_items', []))}"
+            f"summary={len(notes_dict.get('summary', ''))} chars, "
+            f"moments={len(notes_dict.get('key_moments', []))}, "
+            f"decisions={len(notes_dict.get('decisions', []))}, "
+            f"action_items={len(notes_dict.get('action_items', []))}"
         )
         return True
 
     except httpx.RequestError as e:
+        await _keep_previous_notes(meeting_id)
         logger.error(f"Network error generating AI notes for meeting {meeting_id}: {e}")
         return False
     except Exception as e:
+        await _keep_previous_notes(meeting_id)
         logger.error(f"Error generating AI notes for meeting {meeting_id}: {e}", exc_info=True)
         return False
 
@@ -228,3 +311,20 @@ def _parse_ai_notes(ai_text: str) -> dict | None:
     except json.JSONDecodeError:
         logger.error(f"Failed to parse AI notes JSON: {text[:200]}")
         return None
+
+
+async def _keep_previous_notes(meeting_id: int) -> None:
+    """Restore previous valid notes when regeneration fails."""
+    async with async_session_local() as db:
+        meeting = await db.get(Meeting, meeting_id)
+        if not meeting:
+            return
+        data_dict = dict(meeting.data or {})
+        prev = data_dict.get("ai_notes_previous")
+        if prev:
+            data_dict["ai_notes"] = prev
+            meeting.data = data_dict
+            from sqlalchemy.orm.attributes import flag_modified
+            flag_modified(meeting, "data")
+            await db.commit()
+            logger.info(f"Restored previous AI notes for meeting {meeting_id} after failure")

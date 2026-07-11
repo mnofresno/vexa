@@ -4,6 +4,7 @@ Post-meeting aggregation, webhooks, and hooks.
 Same logic, same webhook payloads.
 """
 
+import enum
 import logging
 import os
 
@@ -19,6 +20,70 @@ from .config import TRANSCRIPTION_COLLECTOR_URL, POST_MEETING_HOOKS
 from .webhooks import send_completion_webhook
 
 logger = logging.getLogger("meeting_api.post_meeting")
+
+
+# ---------------------------------------------------------------------------
+# Post-meeting state machine
+# ---------------------------------------------------------------------------
+# WAITING_FOR_ARTIFACTS -> TRANSCRIPT_READY -> SPEAKERS_READY -> NOTES_READY -> COMPLETE
+#
+# Each transition is idempotent: re-running a finished stage is a no-op.
+# Failed stages record the error and schedule bounded retry.
+
+class PostMeetingState(enum.Enum):
+    WAITING_FOR_ARTIFACTS = "waiting_for_artifacts"
+    TRANSCRIPT_READY = "transcript_ready"
+    SPEAKERS_READY = "speakers_ready"
+    NOTES_READY = "notes_ready"
+    COMPLETE = "complete"
+
+
+_MAX_RETRIES = 3
+_RETRY_KEY = "post_meeting_state"
+_ATTEMPT_KEY = "attempt_count"
+_ERROR_KEY = "last_error_class"
+_ERROR_MSG_KEY = "last_error_message"
+_STAGE_TS_KEY = "post_meeting_stage_timestamps"
+_PREV_NOTES_KEY = "ai_notes_previous"
+_PROMPT_VER_KEY = "ai_notes_prompt_version"
+
+
+def _get_pm_state(meeting: Meeting) -> str:
+    """Return the current post-meeting pipeline state (default: WAITING_FOR_ARTIFACTS)."""
+    return (meeting.data or {}).get(_RETRY_KEY, PostMeetingState.WAITING_FOR_ARTIFACTS.value)
+
+
+def _set_pm_state(meeting: Meeting, state: str, attempt: int = 0,
+                  error_class: str = None, error_msg: str = None) -> None:
+    """Update persisted post-meeting state metadata."""
+    from datetime import datetime
+    from sqlalchemy.orm.attributes import flag_modified
+    data = dict(meeting.data or {})
+    data[_RETRY_KEY] = state
+    data[_ATTEMPT_KEY] = attempt
+    if error_class:
+        data[_ERROR_KEY] = error_class
+        data[_ERROR_MSG_KEY] = error_msg
+    else:
+        data.pop(_ERROR_KEY, None)
+        data.pop(_ERROR_MSG_KEY, None)
+    timestamps = dict(data.get(_STAGE_TS_KEY, {}))
+    timestamps[state] = datetime.utcnow().isoformat()
+    data[_STAGE_TS_KEY] = timestamps
+    meeting.data = data
+    flag_modified(meeting, "data")
+
+
+def _record_failure(meeting: Meeting, error: Exception) -> None:
+    """Record failed stage metadata for retry bookkeeping."""
+    from datetime import datetime
+    from sqlalchemy.orm.attributes import flag_modified
+    data = dict(meeting.data or {})
+    data[_ATTEMPT_KEY] = (data.get(_ATTEMPT_KEY) or 0) + 1
+    data[_ERROR_KEY] = type(error).__name__
+    data[_ERROR_MSG_KEY] = str(error)[:500]
+    meeting.data = data
+    flag_modified(meeting, "data")
 
 
 # v0.10.5 Pack H — aggregation_failure_class taxonomy.
@@ -311,86 +376,124 @@ async def finalize_in_progress_recordings(meeting: Meeting, db: AsyncSession) ->
 
 
 async def run_all_tasks(meeting_id: int):
-    """Run all post-meeting tasks for a given meeting_id.
+    """State-machine driven post-meeting pipeline.
 
-    Uses short-lived DB sessions to avoid holding connections during HTTP calls.
+    WAITING_FOR_ARTIFACTS -> TRANSCRIPT_READY -> SPEAKERS_READY -> NOTES_READY -> COMPLETE
+
+    Each stage is idempotent: re-running a completed stage is a no-op.
+    Failed stages record the error and schedule bounded retry (up to _MAX_RETRIES).
     """
-    logger.info(f"Starting post-meeting tasks for meeting {meeting_id}")
+    logger.info(f"Starting post-meeting pipeline for meeting {meeting_id}")
 
-    # Task 0 (v0.10.5 Bug B fix): finalize any IN_PROGRESS recordings whose
-    # finalizer chunk never made it. Runs FIRST so downstream tasks (webhook
-    # delivery, hooks) see the canonical "completed" state.
-    try:
-        async with async_session_local() as db:
-            meeting = await db.get(Meeting, meeting_id)
-            if meeting:
-                logger.info(f"[Post-meeting] Task 0: finalizing recordings for meeting {meeting_id}")
+    async with async_session_local() as db:
+        meeting = await db.get(Meeting, meeting_id)
+        if not meeting:
+            logger.error(f"Meeting {meeting_id} not found for post-meeting tasks")
+            return
+
+        current = _get_pm_state(meeting)
+        attempt = (meeting.data or {}).get(_ATTEMPT_KEY, 0) or 0
+
+        # --- Stage 1: Recording finalization + transcription aggregation ---
+        if current in (PostMeetingState.WAITING_FOR_ARTIFACTS.value,
+                       PostMeetingState.TRANSCRIPT_READY.value):
+            try:
                 count = await finalize_in_progress_recordings(meeting, db)
                 if count > 0:
                     await db.commit()
-    except Exception as e:
-        logger.error(f"Recording finalization failed for meeting {meeting_id}: {e}", exc_info=True)
-
-    # Task 1: Aggregate transcription data (makes HTTP call to collector)
-    try:
-        async with async_session_local() as db:
-            meeting = await db.get(Meeting, meeting_id)
-            if not meeting:
-                logger.error(f"Meeting {meeting_id} not found for post-meeting tasks")
+                ok = await aggregate_transcription(meeting, db)
+                if not ok:
+                    failure = (meeting.data or {}).get(_ERROR_KEY)
+                    if failure == AggregationFailureClass.TRANSIENT_INFRA:
+                        if attempt >= _MAX_RETRIES:
+                            set_aggregation_failure_class(
+                                meeting, AggregationFailureClass.PERMANENT_INFRA)
+                            await db.commit()
+                            logger.error(
+                                f"Transient retries exhausted for meeting {meeting_id}")
+                            return
+                        _record_failure(meeting, Exception("transient infra"))
+                        await db.commit()
+                        logger.warning(
+                            f"Retrying transcription for meeting {meeting_id} "
+                            f"(attempt {attempt + 1}/{_MAX_RETRIES})")
+                        return
+                    elif failure == AggregationFailureClass.PERMANENT_INFRA:
+                        _record_failure(meeting, Exception("permanent infra"))
+                        await db.commit()
+                        return
+                _set_pm_state(meeting, PostMeetingState.TRANSCRIPT_READY.value)
+                await db.commit()
+            except Exception as e:
+                _record_failure(meeting, e)
+                await db.commit()
+                logger.error(
+                    f"Stage TRANSCRIPT_READY failed for meeting {meeting_id}: {e}",
+                    exc_info=True)
                 return
-            logger.info(f"[Post-meeting] Task 1: aggregating transcription for meeting {meeting_id}")
-            await aggregate_transcription(meeting, db)
-            await db.commit()
-    except Exception as e:
-        logger.error(f"Transcription aggregation failed for meeting {meeting_id}: {e}", exc_info=True)
 
-    # Task 2: Send completion webhook to user (makes HTTP call to user's endpoint)
-    try:
-        async with async_session_local() as db:
-            meeting = await db.get(Meeting, meeting_id)
-            if meeting:
-                logger.info(f"[Post-meeting] Task 2: sending completion webhook for meeting {meeting_id}")
+        current = _get_pm_state(meeting)
+
+        # --- Stage 2: Speaker diarization (requires finalized transcripts) ---
+        if current in (PostMeetingState.TRANSCRIPT_READY.value,
+                       PostMeetingState.SPEAKERS_READY.value):
+            try:
+                from .diarization_service import run_diarization
+                result = await run_diarization(meeting_id, db)
+                _set_pm_state(meeting, PostMeetingState.SPEAKERS_READY.value)
+                await db.commit()
+                logger.info(
+                    f"Stage SPEAKERS_READY for meeting {meeting_id}: "
+                    f"{result.get('total_speakers', 0)} speakers")
+            except Exception as e:
+                _record_failure(meeting, e)
+                await db.commit()
+                logger.error(
+                    f"Stage SPEAKERS_READY failed for meeting {meeting_id}: {e}",
+                    exc_info=True)
+                return
+
+        current = _get_pm_state(meeting)
+
+        # --- Stage 3: AI notes (requires at least one finalized segment) ---
+        if current in (PostMeetingState.SPEAKERS_READY.value,
+                       PostMeetingState.NOTES_READY.value):
+            try:
+                from .meeting_intelligence import generate_ai_notes
+                result = await generate_ai_notes(meeting_id)
+                if result:
+                    _set_pm_state(meeting, PostMeetingState.NOTES_READY.value)
+                    await db.commit()
+                else:
+                    _set_pm_state(meeting, PostMeetingState.NOTES_READY.value)
+                    await db.commit()
+                    logger.info(f"AI notes skipped for meeting {meeting_id}")
+            except Exception as e:
+                _record_failure(meeting, e)
+                await db.commit()
+                logger.error(
+                    f"Stage NOTES_READY failed for meeting {meeting_id}: {e}",
+                    exc_info=True)
+                return
+
+        current = _get_pm_state(meeting)
+
+        # --- Stage 4: Webhook + hooks (export/search readiness) ---
+        if current != PostMeetingState.COMPLETE.value:
+            try:
                 await send_completion_webhook(meeting, db)
-                await db.commit()
-    except Exception as e:
-        logger.error(f"Completion webhook failed for meeting {meeting_id}: {e}", exc_info=True)
-
-    # Task 3: Fire internal post-meeting hooks (makes HTTP calls to hook URLs)
-    try:
-        async with async_session_local() as db:
-            meeting = await db.get(Meeting, meeting_id)
-            if meeting:
-                logger.info(f"[Post-meeting] Task 3: firing internal hooks for meeting {meeting_id}")
                 await fire_post_meeting_hooks(meeting, db)
+                _set_pm_state(meeting, PostMeetingState.COMPLETE.value)
                 await db.commit()
-    except Exception as e:
-        logger.error(f"Post-meeting hooks failed for meeting {meeting_id}: {e}", exc_info=True)
+            except Exception as e:
+                _record_failure(meeting, e)
+                await db.commit()
+                logger.error(
+                    f"Stage COMPLETE failed for meeting {meeting_id}: {e}",
+                    exc_info=True)
+                return
 
-    # Task 4 (Phase 1 MVP): Generate AI post-meeting notes
-    try:
-        from .meeting_intelligence import generate_ai_notes
-        result = await generate_ai_notes(meeting_id)
-        if result:
-            logger.info(f"[Post-meeting] Task 4: AI notes generated for meeting {meeting_id}")
-        else:
-            logger.info(f"[Post-meeting] Task 4: AI notes skipped for meeting {meeting_id}")
-    except Exception as e:
-        logger.error(f"AI notes generation failed for meeting {meeting_id}: {e}", exc_info=True)
-
-    # Task 5 (Phase 2 MVP): Speaker diarization
-    try:
-        from .diarization_service import run_diarization
-        async with async_session_local() as db:
-            result = await run_diarization(meeting_id, db)
-            await db.commit()
-            logger.info(
-                f"[Post-meeting] Task 5: diarization completed for meeting {meeting_id}: "
-                f"{result.get('total_speakers', 0)} speakers, {result.get('updated_count', 0)} segments updated"
-            )
-    except Exception as e:
-        logger.error(f"Speaker diarization failed for meeting {meeting_id}: {e}", exc_info=True)
-
-    logger.info(f"Post-meeting tasks completed for meeting {meeting_id}")
+    logger.info(f"Post-meeting pipeline COMPLETE for meeting {meeting_id}")
 
 
 async def run_status_webhook_task(meeting_id: int, status_change_info: dict = None):
