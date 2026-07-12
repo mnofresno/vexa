@@ -14,6 +14,7 @@ import {
   Lock,
   Bot,
   User,
+  Plus,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -28,6 +29,7 @@ interface SidebarProps {
 
 const navigation = [
   { name: "Meetings", href: "/meetings", icon: Video },
+  { name: "Join Meeting", href: "/join", icon: Plus },
 ];
 
 const adminNavigation = [
