@@ -1303,8 +1303,51 @@ export function getVideoBlockInitScript(): string {
           return;
         }
 
+        // SDP-level video blocker: sets m=video port to 0 (inactive) in
+        // local and remote SDP, preventing WebRTC decoder allocation entirely.
+        // Preserves BUNDLE/rtcp-mux alignment so Chrome doesn't reject the SDP.
+        function sdpMungeDisableVideo(sdp) {
+          var lines = sdp.split('\\n');
+          var result = [];
+          var inVideo = false;
+          for (var i = 0; i < lines.length; i++) {
+            var line = lines[i];
+            if (line.startsWith('m=video')) {
+              inVideo = true;
+              result.push('m=video 0 UDP/TLS/RTP/SAVPF 0');
+              continue;
+            }
+            if (inVideo && (line === '' || line.startsWith('m='))) {
+              inVideo = false;
+            }
+            if (inVideo) {
+              if (line.startsWith('a=sendrecv') || line.startsWith('a=recvonly') || line.startsWith('a=sendonly') || line.startsWith('a=active')) {
+                result.push('a=inactive');
+                continue;
+              }
+              if (line.startsWith('a=rtpmap:') || line.startsWith('a=rtcp-fb:') || line.startsWith('a=fmtp:') || line.startsWith('a=ssrc:')) {
+                continue; // drop codec attrs — no decoder allocation
+              }
+            }
+            result.push(line);
+          }
+          return result.join('\\n');
+        }
+
         window.RTCPeerConnection = function(...args) {
           const pc = new OrigRTC(...args);
+
+          // Override SDP setters to munge video at negotiation layer
+          const origSetLocal = pc.setLocalDescription.bind(pc);
+          pc.setLocalDescription = async function(desc) {
+            if (desc && desc.sdp) { desc = { type: desc.type, sdp: sdpMungeDisableVideo(desc.sdp) }; }
+            return origSetLocal(desc);
+          };
+          const origSetRemote = pc.setRemoteDescription.bind(pc);
+          pc.setRemoteDescription = async function(desc) {
+            if (desc && desc.sdp) { desc = { type: desc.type, sdp: sdpMungeDisableVideo(desc.sdp) }; }
+            return origSetRemote(desc);
+          };
 
           // Block incoming video. Two layers, deferred via setTimeout so the
           // platform's own ontrack runs first and creates the DOM <audio>/
@@ -1369,13 +1412,32 @@ export function getVideoBlockInitScript(): string {
                 try {
                   trackRef.enabled = false;
                 } catch (e) { /* ignore */ }
-                console.log('[Vexa] Incoming video track disabled (track.enabled=false only, no SDP munge, id=' + trackId + ')');
+                console.log('[Vexa] Incoming video track disabled (SDP munge + track.enabled=false, id=' + trackId + ')');
               }, 0);
             }
           });
 
           return pc;
         };
+
+        // Expose a verification function for WebRTC stats — confirms video
+        // bytesReceived stays at 0 when SDP munge is working correctly.
+        window.__vexa_checkVideoBytes = async function() {
+          var stats = {};
+          var pcs = window.__vexa_peer_connections || [];
+          for (var i = 0; i < pcs.length; i++) {
+            try {
+              var reports = await pcs[i].getStats();
+              reports.forEach(function(r) {
+                if (r.type === 'inbound-rtp' && r.kind === 'video') {
+                  stats[r.id] = r.bytesReceived || 0;
+                }
+              });
+            } catch(e) {}
+          }
+          return stats;
+        };
+
         window.RTCPeerConnection.prototype = OrigRTC.prototype;
         Object.keys(OrigRTC).forEach(key => {
           try { window.RTCPeerConnection[key] = OrigRTC[key]; } catch {}
@@ -1390,7 +1452,7 @@ export function getVideoBlockInitScript(): string {
         // custom video-rendering layer or running Zoom Web behind a
         // network-level video filter.
 
-        console.log('[Vexa] RTCPeerConnection patched for video blocking (transcription-only)');
+        console.log('[Vexa] RTCPeerConnection patched for video blocking (SDP munge + track disable)');
       } catch (e) {
         console.error('[Vexa] Video block init script FAILED:', e);
       }
