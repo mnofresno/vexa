@@ -61,7 +61,16 @@ export class X11Input {
       await this.run(["xdotool", "getdisplaygeometry"]);
       return true;
     } catch {
-      return false;
+      console.log("[X11] X display is unresponsive. Attempting recovery...");
+      // Give the monitor script 2s to reload Xvfb
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      try {
+        await this.run(["xdotool", "getdisplaygeometry"]);
+        console.log("[X11] X display recovered successfully");
+        return true;
+      } catch {
+        throw Object.assign(new Error("X11_DISPLAY_CRASH: X display remains unresponsive after recovery attempt"), { code: "X11_DISPLAY_CRASH" as const });
+      }
     }
   }
 

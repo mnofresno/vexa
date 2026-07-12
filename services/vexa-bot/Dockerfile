@@ -136,6 +136,10 @@ RUN mkdir -p /app/vexa-bot/storage/screenshots /app/vexa-bot/storage/logs /app/v
 COPY core/entrypoint.sh /app/vexa-bot/entrypoint.sh
 RUN chmod +x /app/vexa-bot/entrypoint.sh
 
+# Copy monitoring scripts
+COPY scripts/ /app/vexa-bot/scripts/
+RUN chmod +x /app/vexa-bot/scripts/*.sh 2>/dev/null || true
+
 # Set environment
 ENV DISPLAY=:99
 
