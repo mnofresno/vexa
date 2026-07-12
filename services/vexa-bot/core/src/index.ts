@@ -2325,7 +2325,7 @@ export async function runBot(botConfig: BotConfig): Promise<void> {// Store botC
     // Use shared browser args so Teams gets the same fake-device flags as Google Meet.
     // This ensures Chromium creates a fake video device that enumerateDevices can see,
     // allowing Teams to enable the camera button and our getUserMedia patch to intercept.
-    const teamsLaunchArgs = getBrowserArgs(!!botConfig.voiceAgentEnabled);
+    const teamsLaunchArgs = getBrowserArgs(!!botConfig.voiceAgentEnabled, botConfig.platform);
 
     try {
       log("Using MS Edge browser for Teams platform");
@@ -2406,7 +2406,7 @@ export async function runBot(botConfig: BotConfig): Promise<void> {// Store botC
 
     browserInstance = await chromium.launch({
       headless: false,
-      args: getBrowserArgs(!!botConfig.voiceAgentEnabled),
+      args: getBrowserArgs(!!botConfig.voiceAgentEnabled, botConfig.platform),
     });
 
     // Create a new page with permissions and viewport for non-Teams

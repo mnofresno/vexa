@@ -41,7 +41,7 @@ export class X11Input {
       const child = execFile(
         args[0],
         args.slice(1),
-        { env: { ...process.env, DISPLAY: this.display } },
+        { env: { ...process.env, DISPLAY: this.display }, timeout: 5000 },
         (err, stdout) => {
           if (err) reject(err);
           else resolve(stdout);
@@ -75,12 +75,14 @@ export class X11Input {
 
   async moveAbs(x: number, y: number): Promise<void> {
     if (this.dryRun) this.simPointer = { x, y };
-    await this.run(["xdotool", "mousemove", "--sync", String(x), String(y)]);
+    // Omit --sync since Xvfb processes X11 events instantly and --sync can hang under CPU/X11 load
+    await this.run(["xdotool", "mousemove", String(x), String(y)]);
   }
 
   async moveRel(dx: number, dy: number): Promise<void> {
     if (this.dryRun) this.simPointer = { x: this.simPointer.x + dx, y: this.simPointer.y + dy };
-    await this.run(["xdotool", "mousemove_relative", "--sync", "--", String(dx), String(dy)]);
+    // Omit --sync to prevent indefinite hangs inside containers
+    await this.run(["xdotool", "mousemove_relative", "--", String(dx), String(dy)]);
   }
 
   async buttonDown(button = 1): Promise<void> {

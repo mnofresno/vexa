@@ -94,8 +94,12 @@ export async function waitForGoogleMeetingAdmission(
     log("Waiting for Google Meet meeting admission...");
     
     // Take screenshot at start of admission check
-    await page.screenshot({ path: '/app/storage/screenshots/bot-checkpoint-1-admission-start.png', fullPage: true });
+    await page.screenshot({ path: '/app/storage/screenshots/bot-checkpoint-1-admission-start.png' });
     log("📸 Screenshot taken: Start of admission check");
+
+    // Delay to allow the lobby click transition to start and DOM to update
+    log("Waiting 3 seconds for lobby click transition...");
+    await page.waitForTimeout(3000);
     
     // FIRST: Check if bot is already admitted (no waiting room needed)
     log("Checking if bot is already admitted to the Google Meet meeting...");
@@ -108,7 +112,7 @@ export async function waitForGoogleMeetingAdmission(
       log(`Found Google Meet admission indicator: visible meeting controls - Bot is already admitted to the meeting!`);
       
       // Take screenshot when already admitted
-      await page.screenshot({ path: '/app/storage/screenshots/bot-checkpoint-2-admitted.png', fullPage: true });
+      await page.screenshot({ path: '/app/storage/screenshots/bot-checkpoint-2-admitted.png' });
       log("📸 Screenshot taken: Bot confirmed already admitted to meeting");
       
       // --- Call awaiting admission callback even for immediate admission ---
@@ -134,7 +138,7 @@ export async function waitForGoogleMeetingAdmission(
       log(`Found Google Meet waiting room indicator - Bot is still in waiting room`);
       
       // Take screenshot when waiting room indicator found
-      await page.screenshot({ path: '/app/storage/screenshots/bot-checkpoint-4-waiting-room.png', fullPage: true });
+      await page.screenshot({ path: '/app/storage/screenshots/bot-checkpoint-4-waiting-room.png' });
       log("📸 Screenshot taken: Bot confirmed in waiting room");
       
       // --- Call awaiting admission callback to notify meeting-api that bot is waiting ---
@@ -158,6 +162,12 @@ export async function waitForGoogleMeetingAdmission(
       const effectiveTimeout = () => timeout + getEscalationExtensionMs();
 
       while (Date.now() - startTime < effectiveTimeout()) {
+        // Check if browser was redirected away from the meeting
+        if (!page.url().includes("meet.google.com")) {
+          log(`🚨 Bot was redirected away from Google Meet! Current URL: ${page.url()}`);
+          throw new Error(`Bot redirected away from Google Meet to: ${page.url()}`);
+        }
+
         // Check if we're still in waiting room using visibility
         const stillWaiting = await checkForWaitingRoomIndicators(page);
 
@@ -211,6 +221,12 @@ export async function waitForGoogleMeetingAdmission(
       let unknownStateDuration2 = 0;
       const effectiveTimeout2 = () => timeout + getEscalationExtensionMs();
       while (Date.now() - startTime < effectiveTimeout2()) {
+        // Check if browser was redirected away from the meeting
+        if (!page.url().includes("meet.google.com")) {
+          log(`🚨 Bot was redirected away from Google Meet! Current URL: ${page.url()}`);
+          throw new Error(`Bot redirected away from Google Meet to: ${page.url()}`);
+        }
+
         // Rejection check first
         const isRejected = await checkForGoogleRejection(page);
         if (isRejected) {
@@ -261,6 +277,10 @@ export async function waitForGoogleMeetingAdmission(
         const checkInterval = 2000;
         const startTime2 = Date.now();
         while (Date.now() - startTime2 < timeout) {
+          if (!page.url().includes("meet.google.com")) {
+            log(`🚨 Bot was redirected away from Google Meet! Current URL: ${page.url()}`);
+            throw new Error(`Bot redirected away from Google Meet to: ${page.url()}`);
+          }
           const stillWaiting = await checkForWaitingRoomIndicators(page);
           if (!stillWaiting) {
             const isRejected2 = await checkForGoogleRejection(page);
@@ -278,7 +298,7 @@ export async function waitForGoogleMeetingAdmission(
     const finalAdmissionFound = await checkForGoogleAdmissionIndicators(page);
     const finalLobbyVisible = await checkForWaitingRoomIndicators(page);
     if (finalAdmissionFound && !finalLobbyVisible) {
-      await page.screenshot({ path: '/app/storage/screenshots/bot-checkpoint-2-admitted.png', fullPage: true });
+      await page.screenshot({ path: '/app/storage/screenshots/bot-checkpoint-2-admitted.png' });
       log("📸 Screenshot taken: Bot confirmed admitted to meeting");
       log("Successfully admitted to the Google Meet meeting");
       return true;
@@ -291,7 +311,7 @@ export async function waitForGoogleMeetingAdmission(
       throw new Error("Bot admission was rejected by meeting admin");
     }
 
-    await page.screenshot({ path: '/app/storage/screenshots/bot-checkpoint-3-no-indicators.png', fullPage: true });
+    await page.screenshot({ path: '/app/storage/screenshots/bot-checkpoint-3-no-indicators.png' });
     log("📸 Screenshot taken: No meeting indicators found after timeout");
     throw new Error("Bot failed to join the Google Meet meeting - no meeting indicators found within timeout");
     

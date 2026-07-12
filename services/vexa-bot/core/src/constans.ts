@@ -56,8 +56,15 @@ const baseBrowserArgs = [
  * - Teams UI: mic muted after join (join.ts)
  * - TTS: unmutes pactl + UI mic before speaking, re-mutes after
  */
-export function getBrowserArgs(voiceAgentEnabled: boolean = false): string[] {
-  return [...baseBrowserArgs];
+export function getBrowserArgs(voiceAgentEnabled: boolean = false, platform?: string): string[] {
+  const args = [...baseBrowserArgs];
+  if (platform && platform !== "zoom") {
+    const idx = args.indexOf("--in-process-gpu");
+    if (idx !== -1) {
+      args.splice(idx, 1);
+    }
+  }
+  return args;
 }
 
 /**

@@ -15,12 +15,14 @@ export const googleWaitingRoomIndicators: string[] = [
   // Modern waiting room text patterns (2024 Google Meet UI)
   'text="Asking to be let in..."',
   'text*="Asking to be let in"',
-  'text="You\'ll join the call when someone lets you in"',
-  'text*="You\'ll join the call when someone lets you"',
-  'text="Please wait until a meeting host brings you into the call"',
-  'text="Waiting for the host to let you in"',
-  'text="You\'re in the waiting room"',
-  'text="Asking to be let in"',
+  'text*="join the call when someone lets you"',
+  'text*="someone lets you in"',
+  'text*="host brings you into the call"',
+  'text*="Waiting for the host to let you"',
+  'text*="in the waiting room"',
+  'text*="Solicitando unirse"',
+  'text*="cuando alguien te admita"',
+  'text*="espera a que el organizador"',
 
   // Aria labels and waiting room indicators
   '[aria-label*="waiting room"]',
@@ -37,17 +39,19 @@ export const googleRejectionIndicators: string[] = [
   'text*="Your request to join was denied"',
   'text*="You were denied"',
   'text*="weren\'t allowed to join"',
+  'text*="weren’t allowed to join"',
   'text*="not allowed to join"',
   'text*="not admitted"',
   'text*="can\'t join this call"',
+  'text*="can’t join this call"',
   'text*="cannot join this call"',
   'text*="Ask to join again"',
   'button:has-text("Ask to join again")',
-  'button:has-text("Return to home screen")',
 
   // Meeting not found or access denied patterns
   'text="Meeting not found"',
   'text="Can\'t join the meeting"',
+  'text="Can’t join the meeting"',
   'text="Unable to join"',
   'text="Access denied"',
   'text="Meeting has ended"',
@@ -259,16 +263,30 @@ export const googleRemovalIndicators: string[] = [
 // lobby is the last/right-most jsname-tagged <button> in the lobby controls;
 // it carries a jsname and is the only enabled <button> with non-icon text.
 export const googleJoinButtonSelectors: string[] = [
-  // Locale-agnostic: a real <button> carrying Google's jsname token whose label
-  // text is non-empty (excludes icon-only mic/camera toggles which have no text
-  // node). Matches "Ask to join"/"Join now"/localized equivalents alike.
-  'button[jsname]:not([aria-label]):has(span)',
-  'div[jscontroller] button[jsname]:has(span)',
-  // English fallbacks (kept for resilience on English UIs).
-  '//button[.//span[text()="Ask to join"]]',
+  // Locale-agnostic specific button identifier: Qx7uuf is Google Meet's join button jsname
+  'button[jsname="Qx7uuf"]',
+  
+  // Specific text-based matches for common languages (extremely safe from false-positives)
   'button:has-text("Ask to join")',
   'button:has-text("Join now")',
-  'button:has-text("Join")'
+  'button:has-text("Join")',
+  'button:has-text("Solicitar unirse")',
+  'button:has-text("Unirse ahora")',
+  'button:has-text("Unirse")',
+  'button:has-text("Pedir para participar")',
+  'button:has-text("Participar agora")',
+  'button:has-text("Participar")',
+  'button:has-text("Demander à participer")',
+  'button:has-text("Participer")',
+  
+  // Locale-agnostic container-scoped: limit matching to the name input card on the right
+  // We use strict child combinators (> * >) to prevent matching the main page parent wrapper.
+  'div:has(> * > input[type="text"]) button[jsname]:has(span)',
+  'div:has(> * > input[type="text"]) button:has(span)',
+  'div:has(> * > * > input[type="text"]) button[jsname]:has(span)',
+  'div:has(> * > * > input[type="text"]) button:has(span)',
+  'div:has(> input[type="text"]) button[jsname]:has(span)',
+  'div:has(> input[type="text"]) button:has(span)'
 ];
 
 export const googleCameraButtonSelectors: string[] = [

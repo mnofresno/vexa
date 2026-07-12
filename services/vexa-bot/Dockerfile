@@ -95,6 +95,8 @@ RUN export DEBIAN_FRONTEND=noninteractive && apt-get update && apt-get install -
     curl \
     git \
     openssh-server \
+    xdotool \
+    xclip \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /run/sshd \
     && sed -i 's/#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config \
