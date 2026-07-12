@@ -52,20 +52,16 @@ interface BrowserSessionViewProps {
 
 export function BrowserSessionView({ meeting }: BrowserSessionViewProps) {
   const router = useRouter();
-  const [apiUrl, setApiUrl] = useState<string | null>(null);
+  const [apiUrl, setApiUrl] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
   const [showPanel, setShowPanel] = useState(false);
-  const [isDeleting, setIsDeleting] = useState(false);
 
   useEffect(() => {
     fetch(withBasePath("/api/config"))
       .then((r) => r.json())
       .then((cfg) => {
-        setApiUrl(cfg.apiUrl || "");
-      })
-      .catch(() => {
-        setApiUrl("");
+        setApiUrl(cfg.publicApiUrl || cfg.apiUrl || "http://localhost:8056");
       });
   }, []);
 
@@ -91,16 +87,12 @@ export function BrowserSessionView({ meeting }: BrowserSessionViewProps) {
     );
   }
 
-  const gatewayBrowserBase = (apiUrl || "").replace(/\/+$/, "");
-  const browserRoute = (path: string) => {
-    if (apiUrl === null) return null;
-    return gatewayBrowserBase ? `${gatewayBrowserBase}${path}` : withBasePath(path);
-  };
-  const vncUrl = browserRoute(`/b/${token}/vnc/vnc.html?autoconnect=true&resize=scale&reconnect=true&path=b/${token}/vnc/websockify`);
-  const cdpUrl = browserRoute(`/b/${token}/cdp`);
+  // VNC/CDP use relative URLs — nginx proxies /b/ routes to the gateway (same origin, no CORS)
+  const vncUrl = `/b/${token}/vnc/vnc.html?autoconnect=true&resize=scale&reconnect=true&path=b/${token}/vnc/websockify`;
+  const cdpUrl = apiUrl ? `${apiUrl}/b/${token}/cdp` : `/b/${token}/cdp`;
   const mcpUrl = apiUrl ? `${apiUrl}/mcp` : null;
   const sshPort = meeting.data?.ssh_port as number | undefined;
-  const sshHost = apiUrl ? (() => { try { return new URL(apiUrl).hostname; } catch { return ""; } })() : "";
+  const sshHost = apiUrl ? (() => { try { return new URL(apiUrl).hostname; } catch { return "localhost"; } })() : "localhost";
 
   const agentInstructions = cdpUrl
     ? [
@@ -124,12 +116,12 @@ export function BrowserSessionView({ meeting }: BrowserSessionViewProps) {
       ].join("\n")
     : "";
 
+  const [isDeleting, setIsDeleting] = useState(false);
+
   async function handleSave() {
     setIsSaving(true);
     try {
-      const saveUrl = browserRoute(`/b/${token}/save`);
-      if (!saveUrl) throw new Error("Runtime config is still loading");
-      const response = await fetch(saveUrl, {
+      const response = await fetch(withBasePath(`/b/${token}/save`), {
         method: "POST",
       });
       if (!response.ok) throw new Error(await response.text());
@@ -145,9 +137,7 @@ export function BrowserSessionView({ meeting }: BrowserSessionViewProps) {
     if (!confirm("Delete all stored browser data? You will need to log in again.")) return;
     setIsDeleting(true);
     try {
-      const storageUrl = browserRoute(`/b/${token}/storage`);
-      if (!storageUrl) throw new Error("Runtime config is still loading");
-      const response = await fetch(storageUrl, {
+      const response = await fetch(withBasePath(`/b/${token}/storage`), {
         method: "DELETE",
       });
       if (!response.ok) throw new Error(await response.text());
