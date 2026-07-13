@@ -84,6 +84,19 @@ export const useAdminAuthStore = create<AdminAuthState>()(
       partialize: (state) => ({
         isAdminAuthenticated: state.isAdminAuthenticated,
       }),
+      merge: (persistedState, currentState) => {
+        if (!ADMIN_UNLOCK_REQUIRED) {
+          return {
+            ...currentState,
+            isAdminAuthenticated: true,
+          };
+        }
+
+        return {
+          ...currentState,
+          ...(persistedState as Partial<AdminAuthState>),
+        };
+      },
     }
   )
 );

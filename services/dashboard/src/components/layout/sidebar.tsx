@@ -22,6 +22,8 @@ import { useAdminAuthStore } from "@/stores/admin-auth-store";
 import { AdminAuthModal } from "@/components/admin/admin-auth-modal";
 import { VersionChip } from "@/components/version-chip";
 
+const ADMIN_UNLOCK_REQUIRED = process.env.NEXT_PUBLIC_ADMIN_UNLOCK_REQUIRED === "true";
+
 interface SidebarProps {
   isOpen?: boolean;
   onClose?: () => void;
@@ -43,9 +45,10 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
   const router = useRouter();
   const { isAdminAuthenticated, logout: adminLogout } = useAdminAuthStore();
   const [showAdminAuthModal, setShowAdminAuthModal] = useState(false);
+  const adminAccessEnabled = !ADMIN_UNLOCK_REQUIRED || isAdminAuthenticated;
 
   const handleAdminClick = (href: string) => {
-    if (isAdminAuthenticated) {
+    if (adminAccessEnabled) {
       router.push(href);
       onClose?.();
     } else {
@@ -148,7 +151,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                       Admin
                     </span>
                   </div>
-                  {isAdminAuthenticated && (
+                  {adminAccessEnabled && (
                     <Button
                       variant="ghost"
                       size="icon"
@@ -161,7 +164,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                   )}
                 </div>
 
-                {isAdminAuthenticated ? (
+                {adminAccessEnabled ? (
                   // Show admin navigation when authenticated
                   adminNavigation.map((item) => {
                     const isActive = pathname.startsWith(item.href);
