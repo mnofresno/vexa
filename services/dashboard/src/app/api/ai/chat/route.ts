@@ -17,7 +17,7 @@ function parseAIModel(): { provider: string; model: string } | null {
   return { provider: provider.toLowerCase(), model };
 }
 
-function getModel() {
+export function getModel() {
   const config = parseAIModel();
   if (!config) {
     throw new Error("AI not configured. Set AI_MODEL environment variable.");
@@ -101,7 +101,7 @@ function getModel() {
         apiKey: apiKey || "not-needed",
         baseURL: baseUrl || "http://localhost:11434/v1",
       });
-      return custom(model);
+      return custom.chat(model);
     }
 
     default: {
@@ -113,7 +113,7 @@ function getModel() {
         apiKey: apiKey || "not-needed",
         baseURL: baseUrl,
       });
-      return customProvider(model);
+      return customProvider.chat(model);
     }
   }
 }
