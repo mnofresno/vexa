@@ -10,6 +10,11 @@ import uuid
 import httpx
 import pytest
 
+pytestmark = pytest.mark.skipif(
+    "MEETING_API_URL" not in os.environ,
+    reason="live tests require an explicit MEETING_API_URL",
+)
+
 BASE_URL = os.getenv("MEETING_API_URL", "http://localhost:8080")
 API_KEY = os.getenv("TEST_API_KEY", "test-key")
 

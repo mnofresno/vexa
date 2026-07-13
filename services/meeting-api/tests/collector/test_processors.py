@@ -4,6 +4,8 @@ Tests process_stream_message, process_transcript_bundle, and process_speaker_eve
 All external I/O (DB, Redis) is mocked.
 """
 import pytest
+
+from meeting_api.collector.processors import AckDecision
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 from datetime import datetime, timezone
@@ -48,7 +50,7 @@ class TestProcessSpeakerEventMessage:
         event = _make_speaker_event()
         result = await process_speaker_event_message("msg-1", event, mock_redis)
 
-        assert result is True
+        assert result == AckDecision.ACK
         mock_redis.pipeline.assert_called_once()
 
     async def test_missing_required_fields_returns_true(self, mock_redis):
@@ -57,7 +59,7 @@ class TestProcessSpeakerEventMessage:
         event = {"relative_client_timestamp_ms": "1000", "event_type": "start", "participant_name": "Bob"}
         result = await process_speaker_event_message("msg-1", event, mock_redis)
 
-        assert result is True  # Bad data is acked to avoid retry loops
+        assert result == AckDecision.ACK  # Bad data is acked to avoid retry loops
 
     async def test_invalid_timestamp_returns_true(self, mock_redis):
         from meeting_api.collector.processors import process_speaker_event_message
@@ -66,7 +68,7 @@ class TestProcessSpeakerEventMessage:
         event["relative_client_timestamp_ms"] = "not-a-number"
         result = await process_speaker_event_message("msg-1", event, mock_redis)
 
-        assert result is True  # Bad data is acked
+        assert result == AckDecision.ACK  # Bad data is acked
 
     async def test_redis_error_returns_false(self, mock_redis):
         import redis.exceptions
@@ -83,7 +85,7 @@ class TestProcessSpeakerEventMessage:
         event = _make_speaker_event()
         result = await process_speaker_event_message("msg-1", event, mock_redis)
 
-        assert result is False
+        assert result == AckDecision.RETRY
 
 
 # --- process_transcript_bundle tests ---
@@ -101,7 +103,7 @@ class TestProcessTranscriptBundle:
             "speaker": "Alice", "confirmed": confirmed, "pending": [], "uid": "sess-1"
         }, meeting_id=42, redis_c=mock_redis)
 
-        assert result is True
+        assert result == AckDecision.ACK
         mock_redis.pipeline.assert_called()
 
     async def test_pending_segments_stored_with_ttl(self, mock_redis):
@@ -112,7 +114,7 @@ class TestProcessTranscriptBundle:
             "speaker": "Alice", "confirmed": [], "pending": pending, "uid": "sess-1"
         }, meeting_id=42, redis_c=mock_redis)
 
-        assert result is True
+        assert result == AckDecision.ACK
         mock_redis.set.assert_called_once()
         call_kwargs = mock_redis.set.call_args
         assert call_kwargs[1].get("ex") == 60 or call_kwargs[0][2] if len(call_kwargs[0]) > 2 else True
@@ -124,7 +126,7 @@ class TestProcessTranscriptBundle:
             "speaker": "Alice", "confirmed": [], "pending": [], "uid": "sess-1"
         }, meeting_id=42, redis_c=mock_redis)
 
-        assert result is True
+        assert result == AckDecision.ACK
         mock_redis.delete.assert_called_once()
 
     async def test_confirmed_with_empty_text_skipped(self, mock_redis):
@@ -138,7 +140,7 @@ class TestProcessTranscriptBundle:
             "speaker": "Alice", "confirmed": confirmed, "pending": [], "uid": "sess-1"
         }, meeting_id=42, redis_c=mock_redis)
 
-        assert result is True
+        assert result == AckDecision.ACK
 
     async def test_error_returns_false(self, mock_redis):
         from meeting_api.collector.processors import process_transcript_bundle
@@ -149,7 +151,7 @@ class TestProcessTranscriptBundle:
             "speaker": "Alice", "confirmed": confirmed, "pending": [], "uid": "sess-1"
         }, meeting_id=42, redis_c=mock_redis)
 
-        assert result is False
+        assert result == AckDecision.RETRY
 
 
 # --- process_stream_message tests ---
@@ -160,13 +162,13 @@ class TestProcessStreamMessage:
         from meeting_api.collector.processors import process_stream_message
 
         result = await process_stream_message("msg-1", {}, mock_redis)
-        assert result is True
+        assert result == AckDecision.ACK
 
     async def test_invalid_json_payload_returns_true(self, mock_redis):
         from meeting_api.collector.processors import process_stream_message
 
         result = await process_stream_message("msg-1", {"payload": "not{json"}, mock_redis)
-        assert result is True
+        assert result == AckDecision.DEAD_LETTER
 
     async def test_unknown_message_type_returns_true(self, mock_redis):
         from meeting_api.collector.processors import process_stream_message
@@ -179,7 +181,7 @@ class TestProcessStreamMessage:
                 mock_session_ctx.return_value.__aexit__ = AsyncMock(return_value=False)
                 result = await process_stream_message("msg-1", {"payload": payload}, mock_redis)
 
-        assert result is True
+        assert result == AckDecision.ACK
 
     async def test_failed_token_verification_returns_true(self, mock_redis):
         from meeting_api.collector.processors import process_stream_message
@@ -192,4 +194,4 @@ class TestProcessStreamMessage:
                 mock_session_ctx.return_value.__aexit__ = AsyncMock(return_value=False)
                 result = await process_stream_message("msg-1", {"payload": payload}, mock_redis)
 
-        assert result is True
+        assert result == AckDecision.ACK

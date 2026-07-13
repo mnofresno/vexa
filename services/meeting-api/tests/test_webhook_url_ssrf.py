@@ -67,7 +67,11 @@ def test_ssrf_urls_rejected(url):
 
 
 @pytest.mark.parametrize("url", PERMITTED_SAMPLES)
-def test_public_urls_permitted(url):
+def test_public_urls_permitted(url, monkeypatch):
+    monkeypatch.setattr(
+        "meeting_api.webhook_url._resolve_host",
+        lambda _hostname: ["93.184.216.34"],
+    )
     assert validate_webhook_url(url) == url
 
 
