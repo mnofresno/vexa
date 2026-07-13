@@ -4,3 +4,4 @@ export { TranscriptionClient, type TranscriptionClientConfig, type Transcription
 export { SegmentPublisher, type SegmentPublisherConfig } from './segment-publisher';
 export { SpeakerStreamManager, type SpeakerStreamManagerConfig } from './speaker-streams';
 export { resolveSpeakerName, clearSpeakerNameCache, invalidateSpeakerName, reportTrackAudio } from './speaker-identity';
+export { TranscriptionTelemetry, type TelemetryMetrics } from './transcription-telemetry';

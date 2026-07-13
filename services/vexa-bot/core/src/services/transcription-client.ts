@@ -1,4 +1,5 @@
 import { log } from '../utils';
+import { TranscriptionTelemetry, type TelemetryMetrics } from './transcription-telemetry';
 
 export interface TranscriptionWord {
   word: string;
@@ -26,6 +27,8 @@ export interface TranscriptionResult {
   duration: number;
   segments: TranscriptionSegment[];
   model: string;
+  /** Inference time in milliseconds (returned by backend) */
+  inference_ms?: number;
 }
 
 export interface TranscriptionClientConfig {
@@ -49,6 +52,10 @@ export interface TranscriptionClientConfig {
   modelId?: string;
   /** Stable Vexa meeting session UID, forwarded for deterministic segment IDs. */
   sessionUid?: string;
+  /** Optional telemetry instance for pipeline latency monitoring. */
+  telemetry?: TranscriptionTelemetry;
+  /** Audio capture timestamp (ms) from browser side, for capture-latency calculation. */
+  audioCaptureTimestamp?: number;
 }
 
 /**
@@ -88,6 +95,8 @@ export class TranscriptionClient {
   private minSilenceDurationMs: number | undefined;
   private modelId: string;
   private sessionUid: string | undefined;
+  private telemetry: TranscriptionTelemetry | undefined;
+  private audioCaptureTimestamp: number | undefined;
   constructor(config: TranscriptionClientConfig) {
     // Ensure serviceUrl ends with the transcriptions endpoint
     this.serviceUrl = config.serviceUrl.replace(/\/+$/, '');
@@ -102,6 +111,8 @@ export class TranscriptionClient {
     this.minSilenceDurationMs = config.minSilenceDurationMs;
     this.modelId = config.modelId ?? 'mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit';
     this.sessionUid = config.sessionUid;
+    this.telemetry = config.telemetry;
+    this.audioCaptureTimestamp = config.audioCaptureTimestamp;
   }
 
   /**
@@ -243,6 +254,12 @@ export class TranscriptionClient {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 30000);
 
+    // Telemetry timing
+    const requestStart = performance.now();
+    const captureLatency = this.audioCaptureTimestamp
+      ? requestStart - this.audioCaptureTimestamp
+      : 0;
+
     try {
       const response = await fetch(this.serviceUrl, {
         method: 'POST',
@@ -266,10 +283,25 @@ export class TranscriptionClient {
       }
 
       const data = await response.json();
+      const requestEnd = performance.now();
+      const totalDelay = requestEnd - requestStart;
       const result = validateTranscriptionResult(data);
+
+      // Record telemetry if available
+      const inferenceMs = (data as any).inference_ms ?? 0;
+      const networkLatency = Math.max(0, totalDelay - inferenceMs);
+      if (this.telemetry) {
+        this.telemetry.record({
+          audio_capture_ms: captureLatency,
+          voxtral_inference_ms: inferenceMs,
+          network_latency_ms: networkLatency,
+          total_delay_ms: totalDelay,
+        });
+      }
 
       return {
         ...result,
+        inference_ms: inferenceMs,
         segments: result.segments.map(s => ({
           ...s,
           speaker: s.speaker,
