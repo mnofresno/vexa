@@ -64,6 +64,7 @@ RUN export DEBIAN_FRONTEND=noninteractive && apt-get update && apt-get install -
     xvfb \
     pulseaudio \
     xserver-xephyr \
+    x11-utils \
     libssl3 \
     libxcb-xtest0 \
     fluxbox \
