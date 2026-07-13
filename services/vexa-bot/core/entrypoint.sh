@@ -5,15 +5,31 @@ if [ -f "${SDK_LIB_DIR}/libmeetingsdk.so" ]; then
   export LD_LIBRARY_PATH="${SDK_LIB_DIR}:${SDK_LIB_DIR}/qt_libs:${SDK_LIB_DIR}/qt_libs/Qt/lib:${LD_LIBRARY_PATH}"
 fi
 
-# Start a virtual framebuffer in the background
-Xvfb :99 -screen 0 1920x1080x24 &
-
-# Start Xvfb recovery monitor daemon
-SCRIPTS_DIR="/app/vexa-bot/scripts"
-if [ -f "$SCRIPTS_DIR/xvfb-monitor.sh" ]; then
-  echo "[Entrypoint] Starting Xvfb recovery monitor..."
-  bash "$SCRIPTS_DIR/xvfb-monitor.sh" :99 1920x1080x24 &
+# Start the virtual framebuffer and wait until it accepts X11 clients. A
+# background health checker used to kill and restart Xvfb after one failed
+# xdpyinfo probe; under load that closed Chromium in the middle of Meet's name
+# field interaction. Xvfb is a prerequisite for the bot, so fail startup
+# explicitly if it cannot become ready instead of replacing it underneath the
+# browser.
+export DISPLAY="${DISPLAY:-:99}"
+Xvfb "$DISPLAY" -screen 0 1920x1080x24 -ac +extension RANDR +extension RENDER +extension XTEST -nolisten tcp &
+XVFB_PID=$!
+XVFB_READY=0
+for _ in $(seq 1 100); do
+  if xdpyinfo -display "$DISPLAY" >/dev/null 2>&1; then
+    XVFB_READY=1
+    break
+  fi
+  if ! kill -0 "$XVFB_PID" 2>/dev/null; then
+    break
+  fi
+  sleep 0.1
+done
+if [ "$XVFB_READY" -ne 1 ]; then
+  echo "[Entrypoint] Xvfb failed to become ready on $DISPLAY"
+  exit 1
 fi
+echo "[Entrypoint] Xvfb ready on $DISPLAY (pid=$XVFB_PID)"
 
 # Set up PulseAudio for Zoom SDK audio capture
 echo "[Entrypoint] Starting PulseAudio daemon..."

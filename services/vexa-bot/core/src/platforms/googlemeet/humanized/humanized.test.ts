@@ -9,13 +9,12 @@
  * emission, and the screen<->page coordinate mapping — deterministically.
  */
 
-import * as fs from "fs";
-import * as path from "path";
 import { MocapEngine, type Rect } from "./mocapEngine";
 import { X11Input } from "./x11Input";
 import { HumanizedInteractor } from "./humanizedInteraction";
 import { MOCAP_LIBRARY } from "./mocap-data";
 import { googleJoinButtonSelectors, googleNameInputSelectors } from "../selectors";
+import { waitForAnySelector } from "../join";
 
 let passed = 0;
 let failed = 0;
@@ -90,7 +89,7 @@ console.log("\nTest 4: X11Input command emission (dryRun)");
   await x.buttonUp(1);
   await x.typeText("VexaBot", 55);
   const argvs = x.log.map((a) => a.join(" "));
-  assert(argvs.some((a) => a === "xdotool mousemove_relative --sync -- 12 -3"), "relative move uses XTEST mousemove_relative --sync");
+  assert(argvs.some((a) => a === "xdotool mousemove_relative -- 12 -3"), "relative move uses non-blocking XTEST mousemove_relative");
   assert(argvs.some((a) => a === "xdotool mousedown 1"), "button down via xdotool mousedown");
   assert(argvs.some((a) => a === "xdotool mouseup 1"), "button up via xdotool mouseup");
   assert(argvs.some((a) => a === "xdotool type --clearmodifiers --delay 55 -- VexaBot"), "text entry uses XTEST xdotool type (not the hang-prone clipboard path)");
@@ -141,37 +140,20 @@ console.log("\nTest 4: X11Input command emission (dryRun)");
   // ── 7. Locale-agnostic selectors match a Hungarian mock DOM ───
   console.log("\nTest 7: locale-agnostic join/name selectors (hu UI)");
   {
-    const selectorsSrc = fs.readFileSync(
-      path.join(__dirname, "..", "selectors.ts"),
-      "utf-8"
-    );
     // (a) join button: a locale-agnostic structural selector precedes the
     // English text selector, so a Hungarian "Kérvényezés a csatlakozásra"
     // button (no English text) still matches by jsname/structure.
-    const joinBlock = selectorsSrc.slice(
-      selectorsSrc.indexOf("googleJoinButtonSelectors"),
-      selectorsSrc.indexOf("googleCameraButtonSelectors")
-    );
-    const joinJsnameIdx = joinBlock.indexOf("button[jsname]");
-    // Match the English *selector literals* (not the prose comment, which also
-    // mentions the English text).
-    const joinEnglishIdx = joinBlock.indexOf("has-text(\"Ask to join\")");
+    const joinJsnameIdx = googleJoinButtonSelectors.findIndex((selector) => selector.includes("button[jsname"));
+    const joinEnglishIdx = googleJoinButtonSelectors.findIndex((selector) => selector.includes('has-text("Ask to join")'));
     assert(joinJsnameIdx >= 0, "join selectors include a locale-agnostic jsname/structure selector");
     assert(joinJsnameIdx < joinEnglishIdx, "locale-agnostic join selector precedes the English-text fallback");
 
     // (b) name field: structural input selector precedes the English aria-label.
-    const nameBlock = selectorsSrc.slice(
-      selectorsSrc.indexOf("googleNameInputSelectors"),
-      selectorsSrc.indexOf("googleMeetingContainerSelectors")
+    const nameStructIdx = googleNameInputSelectors.findIndex((selector) =>
+      selector.includes("input[jsname]") || selector.includes('input[type="text"]:not(')
     );
-    const nameStructIdx = Math.min(
-      ...["input[jsname]", 'input[type="text"]:not('].map((s) => {
-        const i = nameBlock.indexOf(s);
-        return i < 0 ? Number.MAX_SAFE_INTEGER : i;
-      })
-    );
-    const nameEnglishIdx = nameBlock.indexOf('aria-label="Your name"');
-    assert(nameStructIdx !== Number.MAX_SAFE_INTEGER, "name selectors include a locale-agnostic structural selector");
+    const nameEnglishIdx = googleNameInputSelectors.findIndex((selector) => selector.includes('aria-label="Your name"'));
+    assert(nameStructIdx >= 0, "name selectors include a locale-agnostic structural selector");
     assert(nameStructIdx < nameEnglishIdx, "locale-agnostic name selector precedes the English aria-label fallback");
 
     // (c) DOM match: build a Hungarian lobby (no English text anywhere) and
@@ -201,10 +183,19 @@ console.log("\nTest 4: X11Input command emission (dryRun)");
   // ── 8. join.ts fails LOUD (screenshot) when no selector matches ─
   console.log("\nTest 8: join.ts fails loud when controls are missing");
   {
-    const joinSrc = fs.readFileSync(path.join(__dirname, "..", "join.ts"), "utf-8");
-    assert(/waitForAnySelector/.test(joinSrc), "join.ts uses an ordered multi-selector resolver");
-    const fn = joinSrc.slice(joinSrc.indexOf("export async function waitForAnySelector"));
-    assert(/screenshot/.test(fn) && /throw new Error/.test(fn), "selector resolver screenshots + throws on total miss (no silent skip)");
+    let screenshotTaken = false;
+    const missingPage = {
+      waitForSelector: async () => { throw new Error("missing"); },
+      screenshot: async () => { screenshotTaken = true; },
+    };
+    let missingControlThrew = false;
+    try {
+      await waitForAnySelector(missingPage as any, ["button[missing]"], 1, "missing control");
+    } catch {
+      missingControlThrew = true;
+    }
+    assert(missingControlThrew, "selector resolver throws on total miss");
+    assert(screenshotTaken, "selector resolver screenshots the total miss");
   }
 
   console.log(`\n${passed} passed, ${failed} failed`);
