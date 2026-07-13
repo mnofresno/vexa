@@ -69,15 +69,29 @@ function validateTranscriptionResult(data: any): TranscriptionResult {
   if (!Array.isArray(data.segments)) throw new Error('Missing segments array');
   if (typeof data.model !== 'string') throw new Error('Missing model field');
 
-  for (const seg of data.segments) {
-    if (typeof seg.id !== 'string') throw new Error('Segment missing id');
+  const normalizedSegments = data.segments.map((seg: any, index: number) => {
+    const rawId = seg.id ?? seg.segment_id ?? index;
+    if (typeof rawId !== 'string' && typeof rawId !== 'number') {
+      throw new Error('Segment missing id');
+    }
+    const id = String(rawId);
+
+    if (!id) throw new Error('Segment missing id');
     if (typeof seg.start !== 'number' || typeof seg.end !== 'number') {
       throw new Error('Segment missing valid start/end');
     }
     if (typeof seg.text !== 'string') throw new Error('Segment missing text');
-  }
 
-  return data as TranscriptionResult;
+    return {
+      ...seg,
+      id,
+    };
+  });
+
+  return {
+    ...data,
+    segments: normalizedSegments,
+  } as TranscriptionResult;
 }
 
 /**
