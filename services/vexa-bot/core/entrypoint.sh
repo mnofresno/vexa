@@ -8,6 +8,13 @@ fi
 # Start a virtual framebuffer in the background
 Xvfb :99 -screen 0 1920x1080x24 &
 
+# Start Xvfb recovery monitor daemon
+SCRIPTS_DIR="/app/vexa-bot/scripts"
+if [ -f "$SCRIPTS_DIR/xvfb-monitor.sh" ]; then
+  echo "[Entrypoint] Starting Xvfb recovery monitor..."
+  bash "$SCRIPTS_DIR/xvfb-monitor.sh" :99 1920x1080x24 &
+fi
+
 # Set up PulseAudio for Zoom SDK audio capture
 echo "[Entrypoint] Starting PulseAudio daemon..."
 pulseaudio --start --log-target=syslog 2>/dev/null || true
