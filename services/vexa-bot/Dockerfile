@@ -31,19 +31,9 @@ RUN npm run build:native || echo "[Build] Native addon build skipped (SDK not av
 # ==============================================================================
 # Stage 2: Build TypeScript
 # ==============================================================================
-FROM mcr.microsoft.com/playwright:v1.56.0-jammy AS ts-builder
+FROM node:20-bookworm-slim AS ts-builder
 
 WORKDIR /app/vexa-bot
-
-# Install TypeScript build dependencies
-RUN apt-get update && apt-get install -y \
-    xvfb \
-    ffmpeg \
-    x11-utils \
-    pulseaudio \
-    x11-xserver-utils \
-    fluxbox \
-    && rm -rf /var/lib/apt/lists/*
 
 # Copy workspace files
 COPY core/package*.json ./core/
@@ -61,16 +51,6 @@ COPY core/assets/ ./assets/
 
 # Build TypeScript
 RUN npm run build
-
-# Install Playwright browsers
-RUN npx playwright install-deps && npx playwright install --with-deps
-
-# Install MS Edge for Teams support (x86_64 only)
-RUN arch=$(uname -m) && if [ "$arch" = "x86_64" ] || [ "$arch" = "amd64" ]; then \
-    cd /app/vexa-bot/core && npx playwright install msedge; \
-    else \
-    echo "Skipping msedge installation on $arch (not supported)"; \
-    fi
 
 # ==============================================================================
 # Stage 3: Runtime
