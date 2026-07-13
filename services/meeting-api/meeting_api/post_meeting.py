@@ -482,6 +482,10 @@ async def run_all_tasks(meeting_id: int):
                 from .meeting_intelligence import generate_ai_notes
                 result = await generate_ai_notes(meeting_id)
                 if result:
+                    # generate_ai_notes persists through its own DB session. Reload
+                    # JSONB before advancing state so this session cannot overwrite
+                    # the newly generated notes with its stale meeting.data value.
+                    await db.refresh(meeting, attribute_names=["data"])
                     _set_pm_state(meeting, PostMeetingState.NOTES_READY.value)
                     await db.commit()
                 else:
