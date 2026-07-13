@@ -244,6 +244,22 @@ export const useMeetingsStore = create<MeetingsState>((set, get) => ({
       // - sort by absolute_start_time
       // - collapse overlap (containment / expansion / tail-repeat)
       get().bootstrapTranscripts(result.segments);
+      // The transcript response carries the freshest meeting.data, including
+      // post-meeting AI notes. Keep it in sync with the segment bootstrap.
+      const { currentMeeting, meetings } = get();
+      if (currentMeeting?.id === result.meeting.id) {
+        const refreshedMeeting = {
+          ...currentMeeting,
+          ...result.meeting,
+          data: { ...currentMeeting.data, ...result.meeting.data },
+        };
+        set({
+          currentMeeting: refreshedMeeting,
+          meetings: meetings.map((meeting) =>
+            meeting.id === refreshedMeeting.id ? refreshedMeeting : meeting
+          ),
+        });
+      }
       // Store recordings from the transcript response
       if (result.recordings.length > 0) {
         set({ recordings: result.recordings });

@@ -1054,7 +1054,7 @@ class TranscriptionSegment(BaseModel):
     @classmethod
     def validate_language(cls, v):
         """Validate that the language code is one of the accepted faster-whisper codes."""
-        if v is not None and v != "" and v not in ACCEPTED_LANGUAGE_CODES:
+        if v is not None and v not in ("", "unknown") and v not in ACCEPTED_LANGUAGE_CODES:
             raise ValueError(f"Invalid language code '{v}'. Must be one of: {sorted(ACCEPTED_LANGUAGE_CODES)}")
         return v
 
