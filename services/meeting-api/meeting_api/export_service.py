@@ -81,7 +81,15 @@ async def export_meeting_markdown(meeting_id: int, db: AsyncSession) -> Optional
             Recording.status == "completed",
         )
     )
-    recordings = rec_result.scalars().all()
+    recordings = list(rec_result.scalars().all())
+    recording_sessions = {rec.session_uid for rec in recordings if rec.session_uid}
+    for recording in (meeting.data or {}).get("recordings", []):
+        if not isinstance(recording, dict) or recording.get("status") != "completed":
+            continue
+        session_uid = recording.get("session_uid")
+        if session_uid and session_uid in recording_sessions:
+            continue
+        recordings.append(recording)
 
     now = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -104,15 +112,24 @@ async def export_meeting_markdown(meeting_id: int, db: AsyncSession) -> Optional
         lines.append("## Recording")
         lines.append("")
         for rec in recordings:
-            lines.append(f"- **Source:** {_md_escape(rec.source)}")
-            if rec.created_at:
-                lines.append(f"- **Captured:** {rec.created_at.isoformat()}")
-            if rec.completed_at:
-                lines.append(f"- **Completed:** {rec.completed_at.isoformat()}")
-            if rec.session_uid:
-                lines.append(f"- **Session:** {_md_escape(rec.session_uid)}")
-            if rec.error_message:
-                lines.append(f"- **Error:** {_md_escape(rec.error_message)}")
+            value = rec.get if isinstance(rec, dict) else lambda key: getattr(rec, key, None)
+            source = value("source")
+            created_at = value("created_at")
+            completed_at = value("completed_at")
+            session_uid = value("session_uid")
+            error_message = value("error_message")
+
+            lines.append(f"- **Source:** {_md_escape(source or 'unknown')}")
+            if created_at:
+                captured = created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at)
+                lines.append(f"- **Captured:** {_md_escape(captured)}")
+            if completed_at:
+                completed = completed_at.isoformat() if hasattr(completed_at, "isoformat") else str(completed_at)
+                lines.append(f"- **Completed:** {_md_escape(completed)}")
+            if session_uid:
+                lines.append(f"- **Session:** {_md_escape(session_uid)}")
+            if error_message:
+                lines.append(f"- **Error:** {_md_escape(error_message)}")
             lines.append("")
 
     # Transcript — finalized segments only

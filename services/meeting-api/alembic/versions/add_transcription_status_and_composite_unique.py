@@ -22,9 +22,9 @@ depends_on = None
 
 def upgrade() -> None:
     # 1. Add the status column
-    op.add_column(
-        "transcriptions",
-        sa.Column("status", sa.String(10), nullable=False, server_default="draft"),
+    op.execute(
+        "ALTER TABLE transcriptions ADD COLUMN IF NOT EXISTS status "
+        "VARCHAR(10) NOT NULL DEFAULT 'draft'"
     )
 
     # 2. Backfill legacy NULL segment_ids with deterministic UUIDs
@@ -49,18 +49,15 @@ def upgrade() -> None:
     #    identity. PostgreSQL treats NULLs as distinct, so session_uid must be
     #    present on new segment messages for this to enforce idempotency.
     op.execute("DROP INDEX IF EXISTS ix_transcription_meeting_segment")
-    op.create_index(
-        "ix_transcription_meeting_segment",
-        "transcriptions",
-        ["meeting_id", "segment_id"],
-        unique=False,
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS ix_transcription_meeting_segment "
+        "ON transcriptions (meeting_id, segment_id)"
     )
-    op.create_index(
-        "uq_transcription_meeting_session_segment",
-        "transcriptions",
-        ["meeting_id", "session_uid", "segment_id"],
-        unique=True,
-        postgresql_where=sa.text("segment_id IS NOT NULL"),
+    op.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS "
+        "uq_transcription_meeting_session_segment "
+        "ON transcriptions (meeting_id, session_uid, segment_id) "
+        "WHERE segment_id IS NOT NULL"
     )
     op.execute(
         "CREATE INDEX IF NOT EXISTS ix_transcription_meeting_start "
