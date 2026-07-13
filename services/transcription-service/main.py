@@ -524,6 +524,7 @@ async def transcribe_audio(
             "language_probability": detected_language_probability,
             "duration": duration,
             "segments": segments,
+            "model": MODEL_SIZE,
         }
         
         # CTranslate2 handles memory management automatically
