@@ -414,7 +414,7 @@ async def internal_upload_recording(
             logger.warning(
                 "[E1A] late_chunk_after_finalize meeting_id=%s recording_id=%s media_type=%s "
                 "chunk_seq=%s — preserving master storage_path=%s",
-                meeting_id, recording_id, media_type, chunk_seq, prior_sp,
+                meeting.id, rec_payload.get("id"), media_type, chunk_seq, prior_sp,
             )
         existing_media_files.append({
             "id": (prior_same_type or {}).get("id") or _new_recording_numeric_id(),

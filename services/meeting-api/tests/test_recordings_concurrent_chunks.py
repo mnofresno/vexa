@@ -322,6 +322,52 @@ async def test_sequential_audio_then_video_both_persist():
     assert mock_db.commit_calls == 2
 
 
+@pytest.mark.asyncio
+async def test_late_chunk_after_final_preserves_master_without_error():
+    """A non-final chunk arriving after finalization must stay idempotent."""
+    master_path = (
+        f"recordings/{TEST_USER_ID}/123/{TEST_SESSION_UID}/audio/master.webm"
+    )
+    meeting = make_meeting(data={
+        "recordings": [{
+            "id": 123,
+            "meeting_id": TEST_MEETING_ID,
+            "user_id": TEST_USER_ID,
+            "session_uid": TEST_SESSION_UID,
+            "source": "bot",
+            "status": "completed",
+            "media_files": [{
+                "id": 456,
+                "type": "audio",
+                "format": "webm",
+                "storage_path": master_path,
+                "is_final": True,
+                "file_size_bytes": 1024,
+                "chunk_count": 1,
+            }],
+        }],
+    })
+    mock_db = _StatefulMockDB(session=make_session(), meeting=meeting)
+    upload = _make_upload_call("audio", "webm")
+    upload.update(is_final=False, chunk_seq=4)
+
+    fake_storage = MagicMock()
+    fake_storage.upload_file = MagicMock(return_value=None)
+
+    with patch.object(recordings_module, "get_storage_client", return_value=fake_storage), \
+         patch.object(recordings_module, "get_recording_metadata_mode", return_value="meeting_data"), \
+         patch.object(recordings_module.attributes, "flag_modified", new=MagicMock()):
+        result = await recordings_module.internal_upload_recording(
+            db=mock_db,
+            **upload,
+        )
+
+    media_file = meeting.data["recordings"][0]["media_files"][0]
+    assert result["status"] == "completed"
+    assert media_file["storage_path"] == master_path
+    assert media_file["is_final"] is True
+
+
 # ───────────────────────────────────────────────────────────────────────
 # Test 3 — concurrent: two coroutines, audio + video, asyncio.gather.
 #
