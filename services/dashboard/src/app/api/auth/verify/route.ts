@@ -75,6 +75,14 @@ function apiErrorToResponse(apiError: ApiError, context: string): NextResponse<V
  * Verify magic link token and complete login
  */
 export async function POST(request: NextRequest) {
+  if (process.env.VEXA_ALLOW_DIRECT_LOGIN !== "true") {
+    return errorResponse(
+      "Dashboard login is disabled; authenticate through bpf-auth.",
+      410,
+      "SSO_ONLY"
+    );
+  }
+
   const VEXA_ADMIN_API_KEY = process.env.VEXA_ADMIN_API_KEY || "";
 
   // Check configuration first

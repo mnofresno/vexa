@@ -172,6 +172,13 @@ async function handleDirectLogin(email: string): Promise<NextResponse> {
  * OR directly authenticates if SMTP is not configured
  */
 export async function POST(request: NextRequest) {
+  if (process.env.VEXA_ALLOW_DIRECT_LOGIN !== "true") {
+    return NextResponse.json(
+      { error: "Dashboard login is disabled; authenticate through bpf-auth.", code: "SSO_ONLY" },
+      { status: 410 }
+    );
+  }
+
   // Check Admin API configuration first
   const adminApiKey = process.env.VEXA_ADMIN_API_KEY;
 
