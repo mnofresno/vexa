@@ -111,6 +111,14 @@ export async function waitForGoogleMeetingAdmission(
     await page.screenshot({ path: '/app/storage/screenshots/bot-checkpoint-1-admission-start.png' });
     log("📸 Screenshot taken: Start of admission check");
 
+    // Reaching this function means the platform-specific join action completed
+    // successfully. Google may render a blank transition instead of stable
+    // waiting-room text, so the click itself is the reliable lifecycle boundary.
+    // Emit this once before inspecting the post-click DOM; ACTIVE is still gated
+    // by strong in-meeting controls below.
+    await callAwaitingAdmissionCallback(botConfig);
+    log("Awaiting admission callback sent after successful join request");
+
     // Delay to allow the lobby click transition to start and DOM to update
     log("Waiting 3 seconds for lobby click transition...");
     await page.waitForTimeout(3000);
@@ -128,14 +136,6 @@ export async function waitForGoogleMeetingAdmission(
       // Take screenshot when already admitted
       await page.screenshot({ path: '/app/storage/screenshots/bot-checkpoint-2-admitted.png' });
       log("📸 Screenshot taken: Bot confirmed already admitted to meeting");
-      
-      // --- Call awaiting admission callback even for immediate admission ---
-      try {
-        await callAwaitingAdmissionCallback(botConfig);
-        log("Awaiting admission callback sent successfully (immediate admission)");
-      } catch (callbackError: any) {
-        log(`Warning: Failed to send awaiting admission callback: ${callbackError.message}. Continuing...`);
-      }
       
       log("Successfully admitted to the Google Meet meeting - no waiting room required");
       return true;
@@ -155,14 +155,6 @@ export async function waitForGoogleMeetingAdmission(
       await page.screenshot({ path: '/app/storage/screenshots/bot-checkpoint-4-waiting-room.png' });
       log("📸 Screenshot taken: Bot confirmed in waiting room");
       
-      // --- Call awaiting admission callback to notify meeting-api that bot is waiting ---
-      try {
-        await callAwaitingAdmissionCallback(botConfig);
-        log("Awaiting admission callback sent successfully");
-      } catch (callbackError: any) {
-        log(`Warning: Failed to send awaiting admission callback: ${callbackError.message}. Continuing with admission wait...`);
-      }
-      
       stillInWaitingRoom = true;
     }
     
@@ -172,7 +164,6 @@ export async function waitForGoogleMeetingAdmission(
 
       const checkInterval = 2000; // Check every 2 seconds for faster detection
       const startTime = Date.now();
-      let unknownStateDuration = 0;
       const effectiveTimeout = () => timeout + getEscalationExtensionMs();
 
       while (Date.now() - startTime < effectiveTimeout()) {
@@ -194,7 +185,6 @@ export async function waitForGoogleMeetingAdmission(
 
         if (!stillWaiting) {
           log("Google Meet waiting room indicator disappeared - checking if bot was admitted or rejected...");
-          unknownStateDuration += checkInterval;
 
           // Check for admission indicators since waiting room disappeared and no rejection found
           const admissionFound = await checkForGoogleAdmissionIndicators(page);
@@ -205,13 +195,12 @@ export async function waitForGoogleMeetingAdmission(
           }
 
           // Keep waiting if neither admitted nor rejected
-        } else {
-          unknownStateDuration = 0;
         }
 
-        // Escalation check
+        // A post-click blank/unknown DOM is a normal Google Meet transition.
+        // Escalate only when the configured admission timeout is approaching.
         const elapsedMs = Date.now() - startTime;
-        const escalation = checkEscalation(elapsedMs, timeout, unknownStateDuration);
+        const escalation = checkEscalation(elapsedMs, timeout, 0);
         if (escalation) {
           await triggerEscalation(botConfig, escalation.reason);
         }
@@ -232,7 +221,6 @@ export async function waitForGoogleMeetingAdmission(
       log(`No waiting room detected. Polling for admission for up to ${timeout}ms...`);
       const checkInterval = 2000;
       const startTime = Date.now();
-      let unknownStateDuration2 = 0;
       const effectiveTimeout2 = () => timeout + getEscalationExtensionMs();
       while (Date.now() - startTime < effectiveTimeout2()) {
         // Check if browser was redirected away from the meeting
@@ -260,24 +248,15 @@ export async function waitForGoogleMeetingAdmission(
         const lobbyVisible = await checkForWaitingRoomIndicators(page);
         if (lobbyVisible) {
           log("ℹ️ Waiting room appeared during polling. Switching to waiting-room monitoring...");
-
-          // --- Call awaiting admission callback when waiting room appears during polling ---
-          try {
-            await callAwaitingAdmissionCallback(botConfig);
-            log("Awaiting admission callback sent successfully (during polling)");
-          } catch (callbackError: any) {
-            log(`Warning: Failed to send awaiting admission callback: ${callbackError.message}. Continuing...`);
-          }
-
           stillInWaitingRoom = true;
-          unknownStateDuration2 = 0;
           break;
         }
 
-        // Track unknown state for escalation
-        unknownStateDuration2 += checkInterval;
+        // The join request was sent successfully; absence of stable lobby text
+        // is not an unknown blocking state. Only the real timeout should prompt
+        // human intervention.
         const elapsedMs = Date.now() - startTime;
-        const escalation = checkEscalation(elapsedMs, timeout, unknownStateDuration2);
+        const escalation = checkEscalation(elapsedMs, timeout, 0);
         if (escalation) {
           await triggerEscalation(botConfig, escalation.reason);
         }
