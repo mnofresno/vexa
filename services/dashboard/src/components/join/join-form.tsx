@@ -20,6 +20,8 @@ import { useAuthStore } from "@/stores/auth-store";
 import { shouldTriggerZoomOAuth, startZoomOAuth } from "@/lib/zoom-oauth-client";
 import { getDefaultBotName } from "@/hooks/use-runtime-config";
 
+const LEGACY_BOT_NAMES = new Set(["Vexa", "Vexa - Open Source Bot", "Meeting Assistant"]);
+
 interface JoinFormProps {
   onSuccess?: (meetingId: string, platform: Platform, nativeId: string) => void;
 }
@@ -38,7 +40,10 @@ export function JoinForm({ onSuccess }: JoinFormProps) {
   const [passcode, setPasscode] = useState("");
   const [botName, setBotName] = useState(() => {
     if (typeof window !== "undefined") {
-      return localStorage.getItem("vexa-join-bot-name") || getDefaultBotName();
+      const stored = localStorage.getItem("vexa-join-bot-name");
+      if (stored && !LEGACY_BOT_NAMES.has(stored.trim())) {
+        return stored;
+      }
     }
     return getDefaultBotName();
   });
@@ -105,7 +110,10 @@ export function JoinForm({ onSuccess }: JoinFormProps) {
     }
 
     // Set bot name - use custom name or configured default
-    request.bot_name = botName.trim() || config?.defaultBotName || getDefaultBotName();
+    const requestedBotName = botName.trim();
+    request.bot_name = requestedBotName && !LEGACY_BOT_NAMES.has(requestedBotName)
+      ? requestedBotName
+      : config?.defaultBotName || getDefaultBotName();
 
     // Persist to localStorage
     if (typeof window !== "undefined") {

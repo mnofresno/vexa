@@ -32,6 +32,8 @@ import { shouldTriggerZoomOAuth, startZoomOAuth } from "@/lib/zoom-oauth-client"
 import { withBasePath } from "@/lib/base-path";
 import { getDefaultBotName } from "@/hooks/use-runtime-config";
 
+const LEGACY_BOT_NAMES = new Set(["Vexa", "Vexa - Open Source Bot", "Meeting Assistant"]);
+
 
 export function JoinModal() {
   const router = useRouter();
@@ -49,7 +51,10 @@ export function JoinModal() {
   const [transcribeEnabled, setTranscribeEnabled] = useState(true);
   const [botName, setBotName] = useState(() => {
     if (typeof window !== "undefined") {
-      return localStorage.getItem("vexa-join-bot-name") || getDefaultBotName();
+      const stored = localStorage.getItem("vexa-join-bot-name");
+      if (stored && !LEGACY_BOT_NAMES.has(stored.trim())) {
+        return stored;
+      }
     }
     return getDefaultBotName();
   });
@@ -148,7 +153,10 @@ export function JoinModal() {
       request.meeting_url = parsedInput.originalUrl;
     }
 
-    request.bot_name = botName.trim() || config?.defaultBotName || getDefaultBotName();
+    const requestedBotName = botName.trim();
+    request.bot_name = requestedBotName && !LEGACY_BOT_NAMES.has(requestedBotName)
+      ? requestedBotName
+      : config?.defaultBotName || getDefaultBotName();
 
     if (language && language !== "auto") {
       request.language = language;
