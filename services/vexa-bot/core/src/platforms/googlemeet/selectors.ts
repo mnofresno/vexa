@@ -2,13 +2,21 @@
 // Keep this file free of runtime logic; export constants only.
 
 export const googleInitialAdmissionIndicators: string[] = [
-  // DOM fallback selectors — only indicators that do NOT appear in the lobby.
-  // DANGER: Leave call, toolbar, mic/camera toggles all exist in the lobby too!
-  // Primary admission signal is active MediaStreams (checked in admission.ts).
-  '[data-participant-id]',
-  '[data-self-name]',
+  // Controls exclusive to the in-meeting UI. Self participant tiles, the
+  // leave button, microphone and camera controls also exist in the lobby.
+  'button[aria-label*="Chat with everyone"]',
+  'button[aria-label*="Show everyone"]',
+  'button[aria-label*="People"]',
+  'button[aria-label*="Participants"]',
   'button[aria-label*="Share screen"]',
   'button[aria-label*="Present now"]',
+];
+
+export const googlePreJoinIndicators: string[] = [
+  'input[jsname][type="text"]',
+  'button:has-text("Ask to join")',
+  'button:has-text("Join now")',
+  'button:has-text("Join meeting")',
 ];
 
 export const googleWaitingRoomIndicators: string[] = [
@@ -18,6 +26,8 @@ export const googleWaitingRoomIndicators: string[] = [
   'text*="join the call when someone lets you"',
   'text*="someone lets you in"',
   'text*="host brings you into the call"',
+  'text*="meeting host brings you into the call"',
+  'text*="Please wait until a meeting host brings you into the call"',
   'text*="Waiting for the host to let you"',
   'text*="in the waiting room"',
   'text*="Solicitando unirse"',
@@ -390,4 +400,3 @@ export const googlePeopleButtonSelectors: string[] = [
   'button[data-tooltip*="participants"]',
   'button[data-tooltip*="Participants"]'
 ];
-

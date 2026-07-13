@@ -4,6 +4,7 @@ import { BotConfig } from "../../types";
 import { checkEscalation, triggerEscalation, getEscalationExtensionMs } from "../shared/escalation";
 import {
   googleInitialAdmissionIndicators,
+  googlePreJoinIndicators,
   googleWaitingRoomIndicators,
   googleRejectionIndicators
 } from "./selectors";
@@ -39,6 +40,19 @@ export async function checkForGoogleAdmissionIndicators(page: Page): Promise<boo
   if (inWaitingRoom) {
     log(`⚠️ Waiting room indicator visible — suppressing admission (lobby buttons are false positives)`);
     return false;
+  }
+
+  // Pre-join controls can coexist with self participant tiles and media
+  // controls. Their visibility means the bot has not entered the call.
+  for (const selector of googlePreJoinIndicators) {
+    try {
+      if (await page.locator(selector).first().isVisible()) {
+        log(`⚠️ Pre-join control visible (${selector}) — suppressing admission`);
+        return false;
+      }
+    } catch {
+      continue;
+    }
   }
 
   // 2. DOM SELECTORS: participant tiles, self-name, share/present buttons.
@@ -168,19 +182,19 @@ export async function waitForGoogleMeetingAdmission(
           throw new Error(`Bot redirected away from Google Meet to: ${page.url()}`);
         }
 
+        // Rejection is definitive and can coexist briefly with stale lobby DOM.
+        const isRejected = await checkForGoogleRejection(page);
+        if (isRejected) {
+          log("🚨 Bot was rejected from the Google Meet meeting by admin");
+          throw new Error("Bot admission was rejected by meeting admin");
+        }
+
         // Check if we're still in waiting room using visibility
         const stillWaiting = await checkForWaitingRoomIndicators(page);
 
         if (!stillWaiting) {
           log("Google Meet waiting room indicator disappeared - checking if bot was admitted or rejected...");
           unknownStateDuration += checkInterval;
-
-          // CRITICAL: Check for rejection first since that's a definitive outcome
-          const isRejected = await checkForGoogleRejection(page);
-          if (isRejected) {
-            log("🚨 Bot was rejected from the Google Meet meeting by admin");
-            throw new Error("Bot admission was rejected by meeting admin");
-          }
 
           // Check for admission indicators since waiting room disappeared and no rejection found
           const admissionFound = await checkForGoogleAdmissionIndicators(page);

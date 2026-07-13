@@ -27,7 +27,7 @@ export function checkEscalation(
   if (elapsedMs > timeoutMs * 0.8) {
     return { reason: 'waiting_room_timeout_approaching', urgency: 'high' };
   }
-  if (unknownStateDurationMs > 10_000) {
+  if (unknownStateDurationMs > 30_000) {
     return { reason: 'unknown_blocking_state', urgency: 'critical' };
   }
   if (joinFailed && pageAlive) {
