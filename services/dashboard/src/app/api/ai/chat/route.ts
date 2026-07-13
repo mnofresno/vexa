@@ -1,5 +1,6 @@
 import { streamText } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
+import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { createAnthropic } from "@ai-sdk/anthropic";
 
 export const runtime = "nodejs";
@@ -96,12 +97,12 @@ export function getModel() {
     case "ollama":
     case "local":
     case "custom": {
-      // For local/custom providers, API key may not be needed
-      const custom = createOpenAI({
+      const custom = createOpenAICompatible({
+        name: provider,
         apiKey: apiKey || "not-needed",
         baseURL: baseUrl || "http://localhost:11434/v1",
       });
-      return custom.chat(model);
+      return custom(model);
     }
 
     default: {
@@ -109,11 +110,12 @@ export function getModel() {
       if (!baseUrl) {
         throw new Error(`Unknown provider "${provider}". Set AI_BASE_URL for custom providers.`);
       }
-      const customProvider = createOpenAI({
+      const customProvider = createOpenAICompatible({
+        name: provider,
         apiKey: apiKey || "not-needed",
         baseURL: baseUrl,
       });
-      return customProvider.chat(model);
+      return customProvider(model);
     }
   }
 }
