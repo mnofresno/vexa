@@ -1,6 +1,6 @@
 """add transcription status column and composite unique constraint
 
-Revision ID: pr3_transcription_status_composite_uq
+Revision ID: pr3_transcription_contract
 Revises:
 Create Date: 2026-07-11
 
@@ -14,7 +14,7 @@ PR3 — Guarantee Redis publication and Postgres persistence:
 from alembic import op
 import sqlalchemy as sa
 
-revision = "pr3_transcription_status_composite_uq"
+revision = "pr3_transcription_contract"
 down_revision = None
 branch_labels = None
 depends_on = None
