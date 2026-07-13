@@ -100,7 +100,7 @@ export function getDefaultBotName(): string {
     return cachedConfig.defaultBotName;
   }
   // Fallback to default
-  return "Vexa - Open Source Bot";
+  return "EC Listener";
 }
 
 /**

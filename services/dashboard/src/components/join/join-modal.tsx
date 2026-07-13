@@ -30,6 +30,7 @@ import { DocsLink } from "@/components/docs/docs-link";
 import { useAuthStore } from "@/stores/auth-store";
 import { shouldTriggerZoomOAuth, startZoomOAuth } from "@/lib/zoom-oauth-client";
 import { withBasePath } from "@/lib/base-path";
+import { getDefaultBotName } from "@/hooks/use-runtime-config";
 
 
 export function JoinModal() {
@@ -48,9 +49,9 @@ export function JoinModal() {
   const [transcribeEnabled, setTranscribeEnabled] = useState(true);
   const [botName, setBotName] = useState(() => {
     if (typeof window !== "undefined") {
-      return localStorage.getItem("vexa-join-bot-name") || "Vexa";
+      return localStorage.getItem("vexa-join-bot-name") || getDefaultBotName();
     }
-    return "Vexa";
+    return getDefaultBotName();
   });
   const [passcode, setPasscode] = useState("");
   const [authenticated, setAuthenticated] = useState(false);
@@ -147,7 +148,7 @@ export function JoinModal() {
       request.meeting_url = parsedInput.originalUrl;
     }
 
-    request.bot_name = botName.trim() || config?.defaultBotName || "Vexa";
+    request.bot_name = botName.trim() || config?.defaultBotName || getDefaultBotName();
 
     if (language && language !== "auto") {
       request.language = language;
@@ -480,7 +481,7 @@ export function JoinModal() {
             </Label>
             <Input
               id="botName"
-              placeholder="Vexa"
+              placeholder="EC Listener"
               value={botName}
               onChange={(e) => setBotName(e.target.value)}
               className="h-10"

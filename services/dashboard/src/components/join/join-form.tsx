@@ -18,6 +18,7 @@ import { cn } from "@/lib/utils";
 import { DocsLink } from "@/components/docs/docs-link";
 import { useAuthStore } from "@/stores/auth-store";
 import { shouldTriggerZoomOAuth, startZoomOAuth } from "@/lib/zoom-oauth-client";
+import { getDefaultBotName } from "@/hooks/use-runtime-config";
 
 interface JoinFormProps {
   onSuccess?: (meetingId: string, platform: Platform, nativeId: string) => void;
@@ -37,9 +38,9 @@ export function JoinForm({ onSuccess }: JoinFormProps) {
   const [passcode, setPasscode] = useState("");
   const [botName, setBotName] = useState(() => {
     if (typeof window !== "undefined") {
-      return localStorage.getItem("vexa-join-bot-name") || "Vexa";
+      return localStorage.getItem("vexa-join-bot-name") || getDefaultBotName();
     }
-    return "Vexa";
+    return getDefaultBotName();
   });
   const [language, setLanguage] = useState("auto");
   const [transcribeEnabled, setTranscribeEnabled] = useState(true);
@@ -104,7 +105,7 @@ export function JoinForm({ onSuccess }: JoinFormProps) {
     }
 
     // Set bot name - use custom name or configured default
-    request.bot_name = botName.trim() || config?.defaultBotName || "Vexa";
+    request.bot_name = botName.trim() || config?.defaultBotName || getDefaultBotName();
 
     // Persist to localStorage
     if (typeof window !== "undefined") {
@@ -402,7 +403,7 @@ export function JoinForm({ onSuccess }: JoinFormProps) {
             <Label htmlFor="botName">Bot Name (optional)</Label>
             <Input
               id="botName"
-              placeholder="Meeting Assistant"
+              placeholder="EC Listener"
               value={botName}
               onChange={(e) => setBotName(e.target.value)}
             />
