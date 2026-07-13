@@ -93,6 +93,7 @@ import {
 } from "@/lib/export";
 import { getCookie, setCookie } from "@/lib/cookies";
 import { useRuntimeConfig } from "@/hooks/use-runtime-config";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 
 export default function MeetingDetailPage() {
   const params = useParams();
@@ -128,6 +129,7 @@ export default function MeetingDetailPage() {
 
   // Browser view mode state
   const [viewMode, setViewMode] = useState<'transcript' | 'browser'>('transcript');
+  const [botPreviewOpen, setBotPreviewOpen] = useState(true);
 
   // API view toggle state — default ON when coming from onboarding (?apiView=1)
   const [apiViewOpen, setApiViewOpen] = useState(() => searchParams?.get("apiView") === "1");
@@ -901,6 +903,10 @@ export default function MeetingDetailPage() {
       </div>
     );
   })() : null;
+
+  const botPreviewUrl = hasBrowserView
+    ? `/b/${currentMeeting.id}/vnc/vnc.html?autoconnect=true&resize=scale&reconnect=true&view_only=true&path=b/${currentMeeting.id}/vnc/websockify`
+    : null;
 
   return (
     <div className="space-y-2 lg:space-y-6 h-full flex flex-col">
@@ -1732,6 +1738,40 @@ export default function MeetingDetailPage() {
         {/* Sidebar - sticky on desktop, hidden on mobile */}
         <div className="hidden lg:block order-1 lg:order-2">
           <div className="lg:sticky lg:top-6 space-y-6">
+          {botPreviewUrl && (
+            <Card className="overflow-hidden">
+              <Collapsible open={botPreviewOpen} onOpenChange={setBotPreviewOpen}>
+                <CollapsibleTrigger asChild>
+                  <button
+                    type="button"
+                    className="flex w-full items-center justify-between px-4 py-3 text-left hover:bg-muted/50 transition-colors"
+                  >
+                    <span className="flex items-center gap-2 text-sm font-medium">
+                      <Monitor className="h-4 w-4 text-muted-foreground" />
+                      Bot preview
+                      <span className="text-xs font-normal text-muted-foreground">
+                        {currentMeeting.status === "active" ? "live" : statusConfig.label}
+                      </span>
+                    </span>
+                    <ChevronDown className={cn("h-4 w-4 text-muted-foreground transition-transform", botPreviewOpen && "rotate-180")} />
+                  </button>
+                </CollapsibleTrigger>
+                <CollapsibleContent>
+                  <div className="border-t bg-black">
+                    <iframe
+                      src={botPreviewUrl}
+                      title="Bot browser preview"
+                      className="aspect-video w-full border-0"
+                      allow="clipboard-read; clipboard-write"
+                    />
+                    <p className="border-t border-white/10 px-3 py-2 text-xs text-white/70">
+                      Vista del navegador del bot. Úsala para comprobar si Meet muestra la sala, el lobby o un error.
+                    </p>
+                  </div>
+                </CollapsibleContent>
+              </Collapsible>
+            </Card>
+          )}
           {agentPanelOpen && (currentMeeting.status === "active" || currentMeeting.status === "completed") ? (
             null
           ) : apiViewOpen ? (
