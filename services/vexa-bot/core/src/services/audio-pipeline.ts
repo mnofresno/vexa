@@ -281,10 +281,16 @@ export class UnifiedRecordingPipeline {
   }
 
   private async _handleChunk(chunk: AudioChunk): Promise<void> {
-    if (!chunk.data || chunk.data.length === 0) {
+    if ((!chunk.data || chunk.data.length === 0) && !chunk.isFinal) {
       log(`[audio-pipeline] empty chunk dropped (${this.platform}, seq=${chunk.seq})`);
       return;
     }
+
+    // MediaRecorder emits an empty terminal marker after its last data chunk.
+    // The payload is intentionally empty, but isFinal=true is load-bearing:
+    // meeting-api uses it to promote the recording to COMPLETED. Dropping this
+    // marker leaves recordings dependent on post-meeting reconciliation.
+    const chunkData = chunk.data ?? Buffer.alloc(0);
 
     // Serialize uploads via the queue so chunks land in MinIO in seq order
     // even if the source emits faster than the network. Each chunk's
@@ -295,7 +301,7 @@ export class UnifiedRecordingPipeline {
         await this.recordingService.uploadChunk(
           this.uploadUrl,
           this.token,
-          chunk.data,
+          chunkData,
           chunk.seq,
           chunk.isFinal,
           chunk.format,

@@ -171,12 +171,16 @@ async def generate_ai_notes(meeting_id: int):
 
         stored_fp = (meeting.data or {}).get("ai_notes_fingerprint")
         stored_pv = (meeting.data or {}).get("ai_notes_prompt_version")
-        if fingerprint == stored_fp and stored_pv == AI_NOTES_PROMPT_VERSION:
+        if (
+            fingerprint == stored_fp
+            and stored_pv == AI_NOTES_PROMPT_VERSION
+            and (meeting.data or {}).get("ai_notes")
+        ):
             logger.info(
                 f"Transcript fingerprint unchanged for meeting {meeting_id} — "
                 f"skipping AI notes regeneration"
             )
-            return False
+            return True
 
     transcript_text = _build_transcript_text(segments)
     logger.info(
