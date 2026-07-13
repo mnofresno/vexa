@@ -3,11 +3,16 @@ import { cookies } from "next/headers";
 
 const ADMIN_COOKIE_NAME = "vexa-admin-session";
 const COOKIE_MAX_AGE = 60 * 60 * 24; // 24 hours
+const ADMIN_UNLOCK_REQUIRED = process.env.NEXT_PUBLIC_ADMIN_UNLOCK_REQUIRED === "true";
 
 /**
  * Verify admin session from cookie
  */
 async function verifyAdminSession(): Promise<boolean> {
+  if (!ADMIN_UNLOCK_REQUIRED) {
+    return true;
+  }
+
   try {
     const cookieStore = await cookies();
     const sessionCookie = cookieStore.get(ADMIN_COOKIE_NAME);

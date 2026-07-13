@@ -2,6 +2,8 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { withBasePath } from "@/lib/base-path";
 
+const ADMIN_UNLOCK_REQUIRED = process.env.NEXT_PUBLIC_ADMIN_UNLOCK_REQUIRED === "true";
+
 interface AdminAuthState {
   isAdminAuthenticated: boolean;
   isVerifying: boolean;
@@ -16,7 +18,7 @@ interface AdminAuthState {
 export const useAdminAuthStore = create<AdminAuthState>()(
   persist(
     (set) => ({
-      isAdminAuthenticated: false,
+      isAdminAuthenticated: !ADMIN_UNLOCK_REQUIRED,
       isVerifying: false,
       error: null,
 
@@ -58,6 +60,15 @@ export const useAdminAuthStore = create<AdminAuthState>()(
       },
 
       logout: () => {
+        if (!ADMIN_UNLOCK_REQUIRED) {
+          set({
+            isAdminAuthenticated: true,
+            error: null,
+            isVerifying: false,
+          });
+          return;
+        }
+
         // Clear server-side admin cookie
         fetch(withBasePath("/api/auth/admin-logout"), { method: "POST" });
         set({

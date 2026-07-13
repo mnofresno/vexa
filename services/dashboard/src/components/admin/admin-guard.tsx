@@ -9,6 +9,8 @@ import { useAdminAuthStore } from "@/stores/admin-auth-store";
 import { AdminAuthModal } from "./admin-auth-modal";
 import { withBasePath } from "@/lib/base-path";
 
+const ADMIN_UNLOCK_REQUIRED = process.env.NEXT_PUBLIC_ADMIN_UNLOCK_REQUIRED === "true";
+
 interface AdminGuardProps {
   children: React.ReactNode;
 }
@@ -21,6 +23,11 @@ export function AdminGuard({ children }: AdminGuardProps) {
 
   // Check server-side session on mount
   useEffect(() => {
+    if (!ADMIN_UNLOCK_REQUIRED) {
+      setIsChecking(false);
+      return;
+    }
+
     const checkSession = async () => {
       try {
         const response = await fetch(withBasePath("/api/auth/admin-verify"));
@@ -41,6 +48,10 @@ export function AdminGuard({ children }: AdminGuardProps) {
   }, [isAdminAuthenticated]);
 
   // Show loading while checking
+  if (!ADMIN_UNLOCK_REQUIRED) {
+    return <>{children}</>;
+  }
+
   if (isChecking) {
     return (
       <div className="flex flex-col items-center justify-center min-h-[60vh] gap-4">
