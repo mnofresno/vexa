@@ -54,15 +54,16 @@ export function AuthProvider({ children }: AuthProviderProps) {
   useEffect(() => {
     if (shouldRedirect) {
       const externalAuthUrl = process.env.NEXT_PUBLIC_EXTERNAL_AUTH_URL;
-      if (externalAuthUrl && !didLogout) {
+      if (externalAuthUrl) {
         // SSO: redirect to webapp for authentication
         const returnUrl = encodeURIComponent(window.location.href);
         window.location.href = `${externalAuthUrl}?returnUrl=${returnUrl}`;
-      } else if (!didLogout) {
-        // Self-hosted: show dashboard login
-        router.push("/login");
+      } else {
+        // Grainbox is SSO-only. Re-enter through the Authentik outpost so an
+        // expired session cannot leave the app stuck on the loading spinner.
+        const returnUrl = encodeURIComponent(window.location.href);
+        window.location.href = `${window.location.origin}/outpost.goauthentik.io/start?rd=${returnUrl}`;
       }
-      // If didLogout: logout() already handles the redirect — do nothing here
     }
   }, [shouldRedirect, router, didLogout]);
 
