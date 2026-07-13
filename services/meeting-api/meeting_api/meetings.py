@@ -2071,6 +2071,7 @@ async def transcribe_meeting(
             session_uid=session_uid,
             segment_id=segment_id,
             created_at=datetime.utcnow(),
+            status="final",
         )
         db.add(t)
         stored += 1
