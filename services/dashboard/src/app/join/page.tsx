@@ -43,8 +43,8 @@ export default function JoinPage() {
           />
         ) : (
           <div className="space-y-6">
-            <JoinForm onSuccess={handleJoinSuccess} />
             <CreateGoogleMeet />
+            <JoinForm onSuccess={handleJoinSuccess} />
           </div>
         )}
       </div>
