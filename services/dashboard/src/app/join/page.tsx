@@ -4,6 +4,7 @@ import { useState } from "react";
 import { JoinForm } from "@/components/join/join-form";
 import { LiveSession } from "@/components/join/live-session";
 import type { Platform } from "@/types/vexa";
+import { CreateGoogleMeet } from "@/components/join/create-google-meet";
 
 interface ActiveSession {
   meetingId: string;
@@ -41,7 +42,10 @@ export default function JoinPage() {
             onEnd={handleSessionEnd}
           />
         ) : (
-          <JoinForm onSuccess={handleJoinSuccess} />
+          <div className="space-y-6">
+            <JoinForm onSuccess={handleJoinSuccess} />
+            <CreateGoogleMeet />
+          </div>
         )}
       </div>
     </div>

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createHmac } from "crypto";
+import { cookies } from "next/headers";
 import { findUserByEmail } from "@/lib/vexa-admin-api";
 
 type CalendarOAuthStatePayload = {
@@ -39,6 +40,9 @@ function signStatePayload(payload: CalendarOAuthStatePayload, secret: string): s
 }
 
 function resolveRedirectUri(req: NextRequest): string {
+  if (process.env.GOOGLE_MEET_REDIRECT_URI) {
+    return process.env.GOOGLE_MEET_REDIRECT_URI;
+  }
   if (process.env.GOOGLE_CALENDAR_REDIRECT_URI) {
     return process.env.GOOGLE_CALENDAR_REDIRECT_URI;
   }
@@ -52,8 +56,16 @@ export async function POST(req: NextRequest) {
       returnTo?: string;
     };
 
-    if (!userEmail || typeof userEmail !== "string") {
-      return NextResponse.json({ error: "userEmail is required" }, { status: 400 });
+    const cookieStore = await cookies();
+    const userInfoCookie = cookieStore.get("vexa-user-info")?.value;
+    let authenticatedEmail = "";
+    try {
+      authenticatedEmail = String(JSON.parse(userInfoCookie || "{}").email || "").toLowerCase();
+    } catch {
+      authenticatedEmail = "";
+    }
+    if (!authenticatedEmail || !userEmail || authenticatedEmail !== userEmail.toLowerCase()) {
+      return NextResponse.json({ error: "Authenticated user email is required" }, { status: 401 });
     }
 
     const clientId = getGoogleClientId();
@@ -65,7 +77,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const userResult = await findUserByEmail(userEmail);
+    const userResult = await findUserByEmail(authenticatedEmail);
     if (!userResult.success || !userResult.data) {
       return NextResponse.json(
         { error: userResult.error?.message || "Could not resolve user" },
@@ -91,7 +103,15 @@ export async function POST(req: NextRequest) {
     authUrl.searchParams.set("client_id", clientId);
     authUrl.searchParams.set("redirect_uri", redirectUri);
     authUrl.searchParams.set("state", state);
-    authUrl.searchParams.set("scope", "https://www.googleapis.com/auth/calendar.readonly");
+    // Keep the read-only Calendar permission and add the least-privileged Meet
+    // permission needed to create spaces from Grainbox.
+    authUrl.searchParams.set(
+      "scope",
+      [
+        "https://www.googleapis.com/auth/calendar.readonly",
+        "https://www.googleapis.com/auth/meetings.space.created",
+      ].join(" "),
+    );
     authUrl.searchParams.set("access_type", "offline");
     authUrl.searchParams.set("prompt", "consent");
 
