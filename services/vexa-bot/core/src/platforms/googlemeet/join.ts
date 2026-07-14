@@ -19,6 +19,23 @@ export function resolveUiInteractionMode(botConfig: BotConfig): "humanized" | "s
 }
 
 /**
+ * Authenticated mode is a requested capability, not proof that the restored
+ * browser profile is still signed in. Google renders the guest lobby when the
+ * persisted session has expired or was cleared. Detect that state before
+ * skipping the name field, otherwise we click a disabled "Join now" button
+ * and wait forever for admission that was never requested.
+ */
+async function hasAuthenticatedGoogleLobby(page: Page): Promise<boolean> {
+  const guestNameField = page.locator('input[placeholder="Your name"], input[aria-label="Your name"]').first();
+  if (await guestNameField.isVisible().catch(() => false)) return false;
+
+  const signInControl = page.locator('a:has-text("Sign in"), button:has-text("Sign in")').first();
+  if (await signInControl.isVisible().catch(() => false)) return false;
+
+  return true;
+}
+
+/**
  * Wait for the FIRST of an ordered selector list to appear (locale-agnostic
  * selectors first, English text fallbacks last). Returns the matched handle and
  * the selector that won. On total failure: screenshot + LOUD throw with the full
@@ -135,7 +152,12 @@ export async function joinGoogleMeeting(
     await page.fill(selector, text);
   };
 
-  if (botConfig.authenticated) {
+  const authenticatedLobby = botConfig.authenticated && await hasAuthenticatedGoogleLobby(page);
+  if (botConfig.authenticated && !authenticatedLobby) {
+    log("WARNING: authenticated mode requested but Google session is not signed in; falling back to guest join.");
+  }
+
+  if (authenticatedLobby) {
     // Authenticated flow: browser is logged into Google, skip name input
     log("Authenticated mode: skipping name input (using Google account identity)");
 
