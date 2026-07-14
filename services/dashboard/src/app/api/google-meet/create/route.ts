@@ -104,7 +104,16 @@ export async function POST(req: NextRequest) {
         Authorization: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({}),
+      // Create a room that the authenticated bot can enter immediately. With
+      // an empty request Google applies the user's default access policy, which
+      // can put the bot (and every participant) in the knock/approval lobby.
+      body: JSON.stringify({
+        config: {
+          accessType: "OPEN",
+          entryPointAccess: "ALL",
+          moderation: "OFF",
+        },
+      }),
       cache: "no-store",
     });
     const space = await spaceResponse.json().catch(() => ({}));
