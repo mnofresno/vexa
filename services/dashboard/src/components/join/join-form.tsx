@@ -1,8 +1,7 @@
 "use client";
 
 import { useState, useMemo } from "react";
-import { useRouter } from "next/navigation";
-import { Video, Loader2, Check, AlertCircle, Sparkles, Mic, Monitor, UserCheck } from "lucide-react";
+import { Video, Loader2, Check, AlertCircle, Sparkles, Mic, UserCheck } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -20,7 +19,6 @@ import { DocsLink } from "@/components/docs/docs-link";
 import { useAuthStore } from "@/stores/auth-store";
 import { shouldTriggerZoomOAuth, startZoomOAuth } from "@/lib/zoom-oauth-client";
 import { getDefaultBotName } from "@/hooks/use-runtime-config";
-import { withBasePath } from "@/lib/base-path";
 
 const LEGACY_BOT_NAMES = new Set(["Vexa", "Vexa - Open Source Bot", "Meeting Assistant"]);
 
@@ -29,7 +27,6 @@ interface JoinFormProps {
 }
 
 export function JoinForm({ onSuccess }: JoinFormProps) {
-  const router = useRouter();
   const { setActiveMeeting } = useLiveStore();
   const { config } = useRuntimeConfig();
   const user = useAuthStore((state) => state.user);
@@ -179,31 +176,6 @@ export function JoinForm({ onSuccess }: JoinFormProps) {
     }
   };
 
-  const handleBrowserSession = async () => {
-    setIsSubmitting(true);
-    try {
-      const response = await fetch(withBasePath("/api/vexa/bots"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode: "browser_session" }),
-      });
-      if (!response.ok) {
-        const error = await response.json().catch(() => ({ detail: "Failed to start browser session" }));
-        throw new Error(error.detail || "Failed to start browser session");
-      }
-      const meeting = await response.json();
-      toast.success("Browser session starting", {
-        description: "Open the VNC preview and sign in to Google once.",
-      });
-      router.push(`/meetings/${meeting.id}`);
-    } catch (error) {
-      toast.error("Could not start browser session", {
-        description: (error as Error).message,
-      });
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
 
   return (
     <Card>
@@ -214,29 +186,6 @@ export function JoinForm({ onSuccess }: JoinFormProps) {
         </CardDescription>
       </CardHeader>
       <CardContent>
-        <div className="mb-6 rounded-xl border border-border bg-muted/30 p-4">
-          <div className="flex items-start gap-3">
-            <Monitor className="mt-0.5 h-5 w-5 text-primary" />
-            <div className="flex-1 space-y-1">
-              <p className="text-sm font-medium">Log in to Google for reliable joins</p>
-              <p className="text-xs text-muted-foreground">
-                Start a persistent browser, sign in to Google through the live preview, and save the session for authenticated meetings.
-              </p>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="mt-2"
-                onClick={handleBrowserSession}
-                disabled={isSubmitting}
-              >
-                {isSubmitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Monitor className="mr-2 h-4 w-4" />}
-                Open Browser Session
-              </Button>
-            </div>
-          </div>
-        </div>
-
         {/* Depleted banner */}
         {isDepleted && (
           <div className="mb-6 rounded-lg bg-amber-950/20 border border-amber-900/30 p-3">
