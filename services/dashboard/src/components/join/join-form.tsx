@@ -180,7 +180,7 @@ export function JoinForm({ onSuccess }: JoinFormProps) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Join a Meeting</CardTitle>
+        <CardTitle>Join an existing meeting</CardTitle>
         <CardDescription>
           Send a transcription bot to record and transcribe your meeting
         </CardDescription>
